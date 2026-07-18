@@ -1,0 +1,21 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!-- Embedded into the bare `vigil-app` Mach-O executable via a linker
+     `-sectcreate __TEXT __info_plist` flag (Package.swift, vigil-app target).
+     `swift run vigil-app` produces no .app bundle, so with no Info.plist macOS
+     falls back to the process name ("vigil-app") for the App menu (About/Hide/Quit)
+     and every NSRunningApplication.localizedName lookup. Embedding this section makes
+     Bundle.main.infoDictionary report CFBundleName/CFBundleDisplayName WITHOUT a bundle,
+     so the App menu reads "Vigil" (verified real-machine: About Vigil / Quit Vigil).
+     Keep in sync with the display name; the full .app packaging (icon + bundle) is a
+     separate backlog item. -->
+<plist version="1.0">
+<dict>
+    <key>CFBundleName</key>
+    <string>Vigil</string>
+    <key>CFBundleDisplayName</key>
+    <string>Vigil</string>
+    <key>CFBundleIdentifier</key>
+    <string>dev.vigil.Vigil</string>
+</dict>
+</plist>

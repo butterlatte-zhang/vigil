@@ -1,0 +1,70 @@
+# Release verification: pull the notarized Vigil-*.dmg off a GitHub Release and prove it
+# on REAL older-macOS runners — DMG staple/Gatekeeper checks, then an extracted-app
+# signature check plus a launch smoke. Exists because the packaging floor
+# (LSMinimumSystemVersion 14.0) is a documented floor, not a verified one: dev machines
+# only cover macOS 26 (the 2026-07-16 Bundle.module crash shipped precisely because the
+# dev box false-passed). macOS runner minutes bill at 10×, so this runs on release
+# publish + manual dispatch only, never per-push.
+name: release-verify
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Release tag carrying the Vigil-*.dmg asset"
+        required: true
+
+jobs:
+  launch-smoke:
+    name: launch smoke (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-14, macos-15]
+    runs-on: ${{ matrix.os }}
+    env:
+      GH_TOKEN: ${{ github.token }}
+      TAG: ${{ github.event_name == 'release' && github.event.release.tag_name || inputs.tag }}
+    steps:
+      - name: Download release asset
+        run: gh release download "$TAG" --repo "$GITHUB_REPOSITORY" --pattern 'Vigil-macos.dmg' --output vigil.dmg
+
+      - name: DMG staple + Gatekeeper
+        run: |
+          sw_vers
+          # Notarization ticket is stapled to the DMG itself (package.sh staples the
+          # dmg, not the .app inside it) — validate/spctl target the dmg here, not
+          # the app. The app's own ticket-carrying check happens post-extraction below.
+          xcrun stapler validate vigil.dmg
+          spctl -a -t open --context context:primary-signature -v vigil.dmg
+
+      - name: Mount, extract app
+        run: |
+          set -euo pipefail
+          MOUNT_POINT="$RUNNER_TEMP/vigil-mount"
+          mkdir -p "$MOUNT_POINT"
+          detach() { hdiutil detach "$MOUNT_POINT" -force >/dev/null 2>&1 || true; }
+          trap detach EXIT
+          hdiutil attach vigil.dmg -nobrowse -readonly -mountpoint "$MOUNT_POINT"
+          ditto "$MOUNT_POINT/Vigil.app" ./Vigil.app
+
+      - name: App signature
+        run: codesign --verify --deep --strict --verbose=2 Vigil.app
+
+      - name: Launch smoke (alive 10 s, no crash)
+        run: |
+          ./Vigil.app/Contents/MacOS/Vigil > launch.log 2>&1 & echo $! > vigil.pid
+          sleep 10
+          if ! kill -0 "$(cat vigil.pid)" 2>/dev/null; then
+            echo "::error::Vigil exited within 10 s on $(sw_vers -productVersion)"
+            echo "--- launch.log ---"; cat launch.log
+            echo "--- crash reports ---"
+            for f in "$HOME"/Library/Logs/DiagnosticReports/Vigil*; do
+              [ -e "$f" ] && sed -n '1,60p' "$f"
+            done
+            exit 1
+          fi
+          kill "$(cat vigil.pid)"
+          echo "OK: alive after 10 s on macOS $(sw_vers -productVersion)"

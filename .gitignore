@@ -1,0 +1,25 @@
+.DS_Store
+__pycache__/
+*.pyc
+.venv/
+.build/
+*.xcodeproj
+*.xcworkspace
+# The T2 thin-shell project is hand-written source, not a build artifact — it MUST be
+# tracked (blanket *.xcodeproj silently swallowed it once; see goal_0703/testfx/STATUS.md).
+!shell/VigilShell.xcodeproj/
+reference/
+release/
+
+# Internal process / development docs — kept locally, excluded from the public repo
+# (untracked via `git rm -r --cached`; the working-tree files are preserved).
+goal/
+spike/
+CLAUDE.md
+DOCTRINE.md
+OBSERVABILITY.md
+
+# Project-local Vigil config (roles.json etc.)
+.vigil/
+.claude/
+worktree/

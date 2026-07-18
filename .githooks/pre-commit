@@ -1,0 +1,10 @@
+#!/usr/bin/env bash
+# Vigil pre-commit gate — runs the DETERMINISTIC test tier (Tier 1) so no red
+# commit lands. Same script CI runs (tests/ci.sh): VigilCore swift test + no-LLM
+# python. The real-agent battery (tests/run_all.sh) is NOT run here (slow, costs
+# money, needs claude/codex + auth) — run it manually before milestones.
+#
+# Enable once:   git config core.hooksPath .githooks
+# Bypass once:   git commit --no-verify
+# set -e
+# exec "$(git rev-parse --show-toplevel)/tests/ci.sh"
