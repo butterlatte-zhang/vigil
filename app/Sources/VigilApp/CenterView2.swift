@@ -389,9 +389,6 @@ struct BottomTerminalPanel: View {
     let app: AppModel
     @Bindable var session: SessionVM
     let vg: VGTokens
-    /// Height at the moment a resize drag begins, so the gesture applies a delta (dragging the
-    /// handle up grows the panel).
-    @State private var dragStartHeight: CGFloat?
 
     var body: some View {
         VStack(spacing: 0) {
@@ -407,29 +404,18 @@ struct BottomTerminalPanel: View {
         .accessibilityIdentifier("bottom.terminal")
     }
 
-    /// 6pt grab strip along the top edge — drag to resize, resize-up cursor, height persisted
-    /// on release (AppModel clamps to its range).
+    /// 6pt grab strip along the top edge — drag to resize (up grows), resize cursor, height
+    /// persisted on release (AppModel clamps to its range). AppKit-backed (PaneResizeHandle)
+    /// so the drag can never be lost to a window move.
     private var resizeHandle: some View {
-        Rectangle()
-            .fill(Color.clear)
-            .frame(height: 6)
-            .contentShape(Rectangle())
-            .accessibilityIdentifier("bottom.terminal.resizeHandle")
-            .gesture(
-                DragGesture(minimumDistance: 1)
-                    .onChanged { g in
-                        let start = dragStartHeight ?? app.bottomShellHeight
-                        if dragStartHeight == nil { dragStartHeight = start }
-                        app.setBottomShellHeight(start - g.translation.height)
-                    }
-                    .onEnded { _ in
-                        dragStartHeight = nil
-                        app.persistBottomShellHeight()
-                    }
-            )
-            .onHover { inside in
-                if inside { NSCursor.resizeUpDown.push() } else { NSCursor.pop() }
-            }
+        PaneResizeHandle(
+            axis: .vertical,
+            valueAtStart: { app.bottomShellHeight },
+            onChange: { app.setBottomShellHeight($0) },
+            onEnd: { app.persistBottomShellHeight() }
+        )
+        .frame(height: 6)
+        .accessibilityIdentifier("bottom.terminal.resizeHandle")
     }
 
     private var header: some View {

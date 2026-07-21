@@ -32,15 +32,12 @@ struct SidebarView: View {
         .overlay(alignment: .trailing) { resizeHandle }
     }
 
-    /// Trailing-edge resize strip. Must be AppKit-backed: the window is
-    /// `isMovableByWindowBackground` (Views.swift), and a SwiftUI Color.clear strip does
-    /// NOT set `mouseDownCanMoveWindow = false`, so AppKit treats it as window background
-    /// and drags the whole window instead of resizing (the same failure mode applies to
-    /// the terminal Container). The NSView refuses window-drag, owns the resize cursor, and
-    /// drives the width through closures.
+    /// Trailing-edge resize strip. AppKit-backed (see PaneResizeHandle): refuses
+    /// window-drag, owns the resize cursor, and drives the width through closures.
     private var resizeHandle: some View {
-        SidebarResizeHandle(
-            widthAtStart: { app.railWidth },
+        PaneResizeHandle(
+            axis: .horizontal,
+            valueAtStart: { app.railWidth },
             onChange: { app.setRailWidth($0) },
             onEnd: { app.persistRailWidth() }
         )
@@ -307,59 +304,6 @@ private struct GroupRows: View {
             }
             .buttonStyle(.plain)
             .accessibilityIdentifier("side.group.\(project.id).showAll")
-        }
-    }
-}
-
-// MARK: - Resize handle (AppKit — window-drag-proof, owns the resize cursor)
-
-/// A plain NSView on the sidebar's trailing edge. Three jobs: refuse window-drag
-/// (`mouseDownCanMoveWindow = false`), show the horizontal-resize cursor, and translate
-/// mouse drag into an absolute width via closures (start width captured on mouseDown, so
-/// the width tracks the pointer exactly regardless of accumulated rounding).
-private struct SidebarResizeHandle: NSViewRepresentable {
-    let widthAtStart: () -> CGFloat
-    let onChange: (CGFloat) -> Void
-    let onEnd: () -> Void
-
-    func makeNSView(context: Context) -> HandleView {
-        let v = HandleView()
-        v.wire(widthAtStart: widthAtStart, onChange: onChange, onEnd: onEnd)
-        return v
-    }
-
-    func updateNSView(_ v: HandleView, context: Context) {
-        v.wire(widthAtStart: widthAtStart, onChange: onChange, onEnd: onEnd)
-    }
-
-    final class HandleView: NSView {
-        private var widthAtStart: (() -> CGFloat)?
-        private var onChange: ((CGFloat) -> Void)?
-        private var onEnd: (() -> Void)?
-        private var startWidth: CGFloat = 0
-        private var startX: CGFloat = 0
-
-        func wire(widthAtStart: @escaping () -> CGFloat,
-                  onChange: @escaping (CGFloat) -> Void,
-                  onEnd: @escaping () -> Void) {
-            self.widthAtStart = widthAtStart; self.onChange = onChange; self.onEnd = onEnd
-        }
-
-        override var mouseDownCanMoveWindow: Bool { false }
-
-        override func resetCursorRects() {
-            addCursorRect(bounds, cursor: .resizeLeftRight)
-        }
-
-        override func mouseDown(with event: NSEvent) {
-            startWidth = widthAtStart?() ?? 0
-            startX = event.locationInWindow.x
-        }
-        override func mouseDragged(with event: NSEvent) {
-            onChange?(startWidth + (event.locationInWindow.x - startX))
-        }
-        override func mouseUp(with event: NSEvent) {
-            onEnd?()
         }
     }
 }

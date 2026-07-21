@@ -489,9 +489,9 @@ struct TitlebarDragSurface: NSViewRepresentable {
     func updateNSView(_ nsView: NSView, context: Context) {}
 
     final class DragView: NSView {
-        // We drive the window drag ourselves; opting out of the system's
-        // background-drag is what lets `mouseDown` actually be delivered here
-        // (with it on, AppKit would swallow the event for dragging).
+        // We drive the window drag ourselves (the window refuses background drags,
+        // see WindowConfigurator.configureChrome); refusing here too keeps
+        // `mouseDown` delivered to us even if that policy ever changes.
         override var mouseDownCanMoveWindow: Bool { false }
         override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
 
@@ -499,8 +499,8 @@ struct TitlebarDragSurface: NSViewRepresentable {
             if event.clickCount == 2 {
                 Self.performTitlebarDoubleClick(on: window)
             } else {
-                // Preserve the ordinary "drag the blank titlebar to move the
-                // window" behaviour that isMovableByWindowBackground gave us.
+                // The only window-drag surface: the window itself refuses
+                // background drags, so blank-titlebar drag is provided here.
                 window?.performDrag(with: event)
             }
         }
@@ -574,15 +574,24 @@ struct WindowConfigurator: NSViewRepresentable {
     func updateNSView(_ v: NSView, context: Context) {
         DispatchQueue.main.async { configure(v.window, context.coordinator) }
     }
-    private func configure(_ window: NSWindow?, _ coordinator: Coordinator) {
-        guard let window else { return }
+    /// Window chrome policy, extracted (and internal) so it is unit-testable. Notably the
+    /// window must NOT be movable by background: with the native title bar hidden, that flag
+    /// would turn every blank SwiftUI region into a window-drag surface — stealing drags
+    /// from the pane resize handles and moving the window from random panes. Window dragging
+    /// is provided explicitly by TitlebarDragSurface behind the top-bar rows.
+    static func configureChrome(_ window: NSWindow) {
         window.titleVisibility = .hidden
         window.titlebarAppearsTransparent = true
         window.styleMask.insert(.fullSizeContentView)
-        window.isMovableByWindowBackground = true
+        window.isMovableByWindowBackground = false
         window.standardWindowButton(.closeButton)?.isHidden = true
         window.standardWindowButton(.miniaturizeButton)?.isHidden = true
         window.standardWindowButton(.zoomButton)?.isHidden = true
+    }
+
+    private func configure(_ window: NSWindow?, _ coordinator: Coordinator) {
+        guard let window else { return }
+        Self.configureChrome(window)
 
         // Persist window size + position across launches. SwiftUI's built-in
         // frame autosave saves under a fragile type-mangled key and does NOT restore on
