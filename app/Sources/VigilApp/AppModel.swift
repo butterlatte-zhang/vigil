@@ -334,7 +334,8 @@ final class SessionVM: Identifiable {
                                       configRoot: configRoot, printMode: false,
                                       permissionMode: access, model: model,
                                       userConfigDir: userConfigDir, agentKey: agentKey,
-                                      terminalTheme: terminalTheme)
+                                      terminalTheme: terminalTheme,
+                                      terminalColorSource: terminalColorSource)
         }
         // rootCwd: the owning Project's directory. Root resume rides the Orchestrator
         // (per-launch) — the harness stays resume-agnostic between cells.

@@ -155,6 +155,11 @@ public struct DispatchHarness: Harness {
     let claude: ClaudeCodeHarness
     let codex: CodexHarness
     let opencode: OpenCodeHarness
+    /// The session-wide live color source (same instance every cell's OSC responder reads —
+    /// see GhosttyBackend). Point-read at every launchSpec (never cached at construction) so
+    /// a theme flip mid-session reaches the NEXT spawn, fresh or resume. nil = no COLORFGBG
+    /// injection (vigil-smoke / headless / tests that construct with no color source at all).
+    let terminalColorSource: TerminalColorSource?
 
     public init(claudeBin: String, codexBin: String, opencodeBin: String,
                 hookBin: String, mcpBin: String,
@@ -162,10 +167,12 @@ public struct DispatchHarness: Harness {
                 permissionMode: PermissionMode = .standard,
                 model: String? = nil, strictMCP: Bool = false,
                 userConfigDir: String? = nil, agentKey: String? = nil,
-                terminalTheme: String? = nil) {
+                terminalTheme: String? = nil,
+                terminalColorSource: TerminalColorSource? = nil) {
         self.claudeBin = claudeBin
         self.userConfigDir = userConfigDir
         self.agentKey = agentKey
+        self.terminalColorSource = terminalColorSource
         // The sub-harnesses re-resolve internally (each with its own kind filter), so they
         // get the full param set — bin/env/extraArgs/model all still apply.
         // terminalTheme is a Claude settings.json policy and therefore goes to the Claude
@@ -199,10 +206,27 @@ public struct DispatchHarness: Harness {
         case .opencode: h = opencode
         default:        h = claude
         }
-        return h.launchSpec(task: task, cwd: cwd, nodeID: nodeID, role: role, isRoot: isRoot,
-                            model: model, resumeSessionId: resumeSessionId,
-                            mcpEndpoint: mcpEndpoint, hookEndpoint: hookEndpoint,
-                            idCred: idCred)
+        let spec = h.launchSpec(task: task, cwd: cwd, nodeID: nodeID, role: role, isRoot: isRoot,
+                                model: model, resumeSessionId: resumeSessionId,
+                                mcpEndpoint: mcpEndpoint, hookEndpoint: hookEndpoint,
+                                idCred: idCred)
+        return Self.applyTerminalColorFgBg(
+            to: spec, resolvedTheme: terminalColorSource?.terminalThemeSnapshot())
+    }
+
+    /// Overlay `COLORFGBG` onto an already-built `LaunchSpec` — the single assembly point for
+    /// all three kinds, so the light/dark → "fg;bg" mapping (`TerminalColorFgBg`) lives in
+    /// exactly one place rather than being duplicated across ClaudeCodeHarness/CodexHarness/
+    /// OpenCodeHarness. Additive only: never touches `args`/`initialPrompt`, and never touches
+    /// claude's `theme` settings key or the OSC 10/11 + DEC 2031 self-heal chain those three
+    /// harnesses already own. `resolvedTheme` unresolved/nil → no-op (spec unchanged), same
+    /// "nothing to give, give nothing" honesty as the model chain.
+    static func applyTerminalColorFgBg(to spec: LaunchSpec, resolvedTheme: String?) -> LaunchSpec {
+        guard let value = TerminalColorFgBg.value(forTheme: resolvedTheme) else { return spec }
+        var env = spec.env
+        env["COLORFGBG"] = value
+        return LaunchSpec(executable: spec.executable, args: spec.args, env: env,
+                          initialPrompt: spec.initialPrompt)
     }
 
     /// The resolved family, kind-agnostically (same resolution launchSpec uses) — the

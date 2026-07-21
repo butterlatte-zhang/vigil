@@ -92,6 +92,27 @@ public final class TerminalColorSource: @unchecked Sendable {
     }
 }
 
+/// The `COLORFGBG` env-var convention (`"fg;bg"`, legacy xterm). Confirmed by a controlled
+/// PTY A/B against real claude binaries (2.1.212/2.1.215/2.1.216) to be the signal claude's
+/// `theme:"auto"` reads to pick its echoed-user-message bubble's fixed 256-color chrome
+/// palette (`48;5;237`/`38;5;231` dark vs. `48;5;255` light) — proven INDEPENDENT of the
+/// OSC 10/11 handshake `OscColorQueryResponder` answers (identical dark result whether that
+/// handshake was answered instantly, answered late, or never answered at all). Do not delete
+/// this as unused just because nothing else in the app reads `COLORFGBG` — it exists purely
+/// to be written into a launched agent's environment.
+enum TerminalColorFgBg {
+    /// `theme` is `TerminalColorSource.terminalThemeSnapshot()`'s resolved value
+    /// ("dark"/"light", `VGTheme.rawValue` — never the unresolved "auto" preference).
+    /// Unrecognized/nil input returns nil rather than guessing a direction.
+    static func value(forTheme theme: String?) -> String? {
+        switch theme {
+        case "dark": return "15;0"
+        case "light": return "0;15"
+        default: return nil
+        }
+    }
+}
+
 /// Agents query the parent terminal's foreground/background color at
 /// boot — `ESC]10;?…` / `ESC]11;?…` — to pick a light/dark render palette. codex (≥0.144)
 /// and opencode contain the literal probes (measured with `strings`); Claude queries too

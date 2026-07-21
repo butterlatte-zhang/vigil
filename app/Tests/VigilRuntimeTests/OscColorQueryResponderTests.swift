@@ -233,4 +233,21 @@ final class OscColorQueryResponderTests: XCTestCase {
         r.feed(data)
         XCTAssertEqual(replies(), [Data("\u{1B}]11;\(bg)\u{07}".utf8)])
     }
+
+    // MARK: - TerminalColorFgBg (the COLORFGBG mapping claude's theme:"auto" echo bubble reads,
+    // independent of the OSC 10/11 handshake above — see the type's doc comment)
+
+    func testTerminalColorFgBgLightMapsToZeroFifteen() {
+        XCTAssertEqual(TerminalColorFgBg.value(forTheme: "light"), "0;15")
+    }
+
+    func testTerminalColorFgBgDarkMapsToFifteenZero() {
+        XCTAssertEqual(TerminalColorFgBg.value(forTheme: "dark"), "15;0")
+    }
+
+    func testTerminalColorFgBgUnrecognizedOrNilThemeReturnsNil() {
+        XCTAssertNil(TerminalColorFgBg.value(forTheme: "auto"), "\"auto\" is a preference, never a resolved theme")
+        XCTAssertNil(TerminalColorFgBg.value(forTheme: nil))
+        XCTAssertNil(TerminalColorFgBg.value(forTheme: "Dark"), "case-sensitive: only the exact VGTheme.rawValue")
+    }
 }

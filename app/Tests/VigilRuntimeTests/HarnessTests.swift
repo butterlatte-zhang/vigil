@@ -1154,6 +1154,118 @@ final class HarnessTests: XCTestCase {
                        "DispatchHarness passes terminalTheme through to the claude sub-harness")
     }
 
+    // MARK: COLORFGBG (claude's theme:"auto" echo-bubble signal — see TerminalColorFgBg's doc
+    // comment; a real-binary A/B confirmed this env var, not the OSC 10/11 handshake, decides
+    // that bubble's color, and Vigil never set it before this fix).
+
+    private func dispatchHarnessForColorFgBg(
+        _ configDir: String? = nil, colorSource: TerminalColorSource?
+    ) -> DispatchHarness {
+        let root = NSTemporaryDirectory() + "vigil_dispatch_fgbg_\(UUID().uuidString.prefix(8))"
+        addTeardownBlock { try? FileManager.default.removeItem(atPath: root) }
+        return DispatchHarness(claudeBin: "/c", codexBin: "/cx", opencodeBin: "/o",
+                               hookBin: "/h", mcpBin: "/m", configRoot: root,
+                               userConfigDir: configDir, terminalColorSource: colorSource)
+    }
+
+    func testColorFgBgLightResolvedThemeSetsZeroFifteen() {
+        let d = dispatchHarnessForColorFgBg(colorSource: TerminalColorSource(terminalTheme: "light"))
+        let s = d.launchSpec(task: "t", cwd: "/w", nodeID: NodeID("n1"), role: .leaf, isRoot: false,
+                             mcpEndpoint: nil, hookEndpoint: nil, idCred: "n1")
+        XCTAssertEqual(s.env["COLORFGBG"], "0;15")
+    }
+
+    func testColorFgBgDarkResolvedThemeSetsFifteenZero() {
+        let d = dispatchHarnessForColorFgBg(colorSource: TerminalColorSource(terminalTheme: "dark"))
+        let s = d.launchSpec(task: "t", cwd: "/w", nodeID: NodeID("n1"), role: .leaf, isRoot: false,
+                             mcpEndpoint: nil, hookEndpoint: nil, idCred: "n1")
+        XCTAssertEqual(s.env["COLORFGBG"], "15;0")
+    }
+
+    func testColorFgBgAppliesToCodexKindToo() {
+        let agents = """
+        { "agents": { "cx": { "bin": "/real/codex", "kind": "codex" } } }
+        """
+        let (cfg, cwd) = makeUserConfig("fgbgcodex", agents: agents)
+        let d = DispatchHarness(claudeBin: "/c", codexBin: "/cx", opencodeBin: "/o",
+                                hookBin: "/h", mcpBin: "/m",
+                                configRoot: NSTemporaryDirectory() + "vigil_fgbg_codex_\(getpid())",
+                                userConfigDir: cfg, agentKey: "cx",
+                                terminalColorSource: TerminalColorSource(terminalTheme: "light"))
+        let s = d.launchSpec(task: "t", cwd: cwd, nodeID: NodeID("n1"), role: .manager, isRoot: true,
+                             mcpEndpoint: nil, hookEndpoint: nil, idCred: "n1")
+        XCTAssertEqual(d.launchKind(role: .manager, isRoot: true, cwd: cwd), .codex,
+                       "sanity: this launch really resolves to codex")
+        XCTAssertEqual(s.env["COLORFGBG"], "0;15", "the overlay is agent-agnostic, applies after dispatch")
+    }
+
+    func testColorFgBgAppliesToOpencodeKindToo() {
+        let agents = """
+        { "agents": { "oc": { "bin": "/real/opencode", "kind": "opencode" } } }
+        """
+        let (cfg, cwd) = makeUserConfig("fgbgoc", agents: agents)
+        let d = DispatchHarness(claudeBin: "/c", codexBin: "/cx", opencodeBin: "/o",
+                                hookBin: "/h", mcpBin: "/m",
+                                configRoot: NSTemporaryDirectory() + "vigil_fgbg_oc_\(getpid())",
+                                userConfigDir: cfg, agentKey: "oc",
+                                terminalColorSource: TerminalColorSource(terminalTheme: "dark"))
+        let s = d.launchSpec(task: "t", cwd: cwd, nodeID: NodeID("n1"), role: .manager, isRoot: true,
+                             mcpEndpoint: nil, hookEndpoint: nil, idCred: "n1")
+        XCTAssertEqual(d.launchKind(role: .manager, isRoot: true, cwd: cwd), .opencode,
+                       "sanity: this launch really resolves to opencode")
+        XCTAssertEqual(s.env["COLORFGBG"], "15;0")
+    }
+
+    func testColorFgBgFreshAndResumeBothCarryIt() {
+        // Mirrors the #44 dual-path pattern (fresh-start vs. resume must not regress each
+        // other): both launch shapes route through the SAME DispatchHarness.launchSpec overlay.
+        let d = dispatchHarnessForColorFgBg(colorSource: TerminalColorSource(terminalTheme: "light"))
+        let fresh = d.launchSpec(task: "t", cwd: "/w", nodeID: NodeID("n1"),
+                                 role: .leaf, isRoot: false,
+                                 mcpEndpoint: nil, hookEndpoint: nil, idCred: "n1")
+        XCTAssertEqual(fresh.env["COLORFGBG"], "0;15", "fresh launch carries COLORFGBG")
+        let resumed = d.launchSpec(task: "", cwd: "/w", nodeID: NodeID("n2"),
+                                   role: .leaf, isRoot: false, resumeSessionId: "sid-1",
+                                   mcpEndpoint: nil, hookEndpoint: nil, idCred: "n2")
+        XCTAssertEqual(resumed.env["COLORFGBG"], "0;15", "resume launch carries COLORFGBG identically")
+    }
+
+    func testColorFgBgTracksLiveThemeFlipAcrossSameSessionSpawns() {
+        // The color source is the session-wide SHARED live instance (same object every cell's
+        // OSC responder reads) — a mid-session theme flip must reach the NEXT spawn without
+        // rebuilding the harness, exactly the "long-running session" scenario this fix targets.
+        let source = TerminalColorSource(terminalTheme: "dark")
+        let d = dispatchHarnessForColorFgBg(colorSource: source)
+        let before = d.launchSpec(task: "t", cwd: "/w", nodeID: NodeID("n1"),
+                                  role: .leaf, isRoot: false,
+                                  mcpEndpoint: nil, hookEndpoint: nil, idCred: "n1")
+        XCTAssertEqual(before.env["COLORFGBG"], "15;0")
+        source.update(terminalTheme: "light", foreground: nil, background: nil)
+        let after = d.launchSpec(task: "t", cwd: "/w", nodeID: NodeID("n2"),
+                                 role: .leaf, isRoot: false,
+                                 mcpEndpoint: nil, hookEndpoint: nil, idCred: "n2")
+        XCTAssertEqual(after.env["COLORFGBG"], "0;15",
+                       "a later same-session child point-reads the flipped value, not a value frozen at harness construction")
+    }
+
+    func testColorFgBgAbsentWhenNoColorSourceProvided() {
+        // Backward compat (vigil-smoke / headless / tests construct with no color source at
+        // all): no injection attempted, matching the model chain's "nothing to give" honesty.
+        let d = dispatchHarnessForColorFgBg(colorSource: nil)
+        let s = d.launchSpec(task: "t", cwd: "/w", nodeID: NodeID("n1"), role: .leaf, isRoot: false,
+                             mcpEndpoint: nil, hookEndpoint: nil, idCred: "n1")
+        XCTAssertNil(s.env["COLORFGBG"])
+    }
+
+    func testColorFgBgAbsentWhenThemeNotYetResolved() {
+        // A color source that has never received a successful synchronizeTerminalAppearance()
+        // publish (empty init) has no theme to give — never guess a direction.
+        let d = dispatchHarnessForColorFgBg(colorSource: TerminalColorSource())
+        let s = d.launchSpec(task: "t", cwd: "/w", nodeID: NodeID("n1"), role: .leaf, isRoot: false,
+                             mcpEndpoint: nil, hookEndpoint: nil, idCred: "n1")
+        XCTAssertNil(s.env["COLORFGBG"])
+    }
+
     func testRolesAccessAcceptsFriendlyAliases() {
         // PermissionMode(configString:) parses loosely: aliases like "full"/"read-only" work.
         let (cfg, cwd) = makeUserConfig(
