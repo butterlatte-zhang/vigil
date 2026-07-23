@@ -1,12 +1,26 @@
-## Vigil
+# Vigil
 
-Vigil is a native macOS multi-agent terminal orchestrator: Claude Code, Codex, and OpenCode work together in a manager-driven tree, each node keeping its CLI's native TUI and full session history, while the manager's context stays lean — detail flows down, summaries roll up.
+### Stop being the message bus for your coding agents.
 
-<p align="left">
+Vigil gives Claude Code, Codex, and OpenCode a live manager–worker tree while every node keeps its native TUI and full session history. Detail flows down, summaries roll up, and the manager's context stays lean.
+
+<p align="center">
+  <a href="https://www.youtube.com/watch?v=HsmSL7V-QOc">
+    <img src="./docs/media/social-preview.png" alt="Watch Vigil orchestrate a live tree of coding agents" width="100%" />
+  </a>
+</p>
+
+<p align="center">
+  <a href="https://www.youtube.com/watch?v=HsmSL7V-QOc"><strong>Watch the demo</strong></a>
+  ·
+  <a href="https://butterlatte-zhang.github.io/vigil/"><strong>Visit the website</strong></a>
+  ·
   <a href="https://github.com/butterlatte-zhang/vigil/releases/latest/download/Vigil-macos.dmg">
     <img src="./docs/media/macos-badge.png" alt="Download Vigil for macOS" width="180" />
   </a>
 </p>
+
+<p align="center"><sub>macOS 14+ · Apple Silicon · signed and notarized · local-first</sub></p>
 
 ## Features
 
@@ -41,7 +55,7 @@ Transcript pointers are recorded for every node: finished sessions stay in the s
 </table>
 
 - **Settings are files** — all configuration lives in JSON under `~/.config/vigil/`; there is no settings panel (see [Configuration](#configuration))
-- **No forced isolation** — nodes run directly in the project directory; a worker that needs isolation uses `git worktree` itself. Vigil imposes no sandbox
+- **Flexible isolation** — nodes can share a project with explicit file ownership or use `git worktree`; Vigil never imposes a hidden sandbox or branch strategy
 - **Honesty as a hard rule** — an agent CLI that isn't detected is never shown as available; an undeliverable message errors instead of pretending it was sent
 - **Never picks your model** — models are namespaced per agent family; if the whole chain is empty, Vigil passes no model flag and lets the CLI use its own default
 - **Native macOS app** — built with Swift + SwiftUI, not Electron
@@ -169,4 +183,4 @@ Contributions are welcome. By contributing, you agree to the licensing terms in 
 
 Vigil is open source under GPL-3.0-or-later.
 
-If your organization cannot comply with GPL, a commercial license is available. Contact [@butterlatte-zhang](https://github.com/butterlatte-zhang) or [916443639@qq.com](mailto:916443639@qq.com) for details.
+If your organization cannot comply with GPL, see [Commercial licensing](./COMMERCIAL-LICENSE.md).
