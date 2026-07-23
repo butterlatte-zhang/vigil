@@ -1,0 +1,158 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Vigil — a control plane for coding-agent trees</title>
+    <meta
+      name="description"
+      content="Run Claude Code, Codex, and OpenCode in a live manager–worker tree while every agent keeps its native terminal."
+    >
+    <meta property="og:title" content="Vigil — stop being the message bus for your coding agents">
+    <meta
+      property="og:description"
+      content="A native macOS control plane for hierarchical Claude Code, Codex, and OpenCode teams."
+    >
+    <meta property="og:type" content="website">
+    <meta property="og:url" content="https://butterlatte-zhang.github.io/vigil/">
+    <meta
+      property="og:image"
+      content="https://butterlatte-zhang.github.io/vigil/media/social-preview.png"
+    >
+    <meta name="twitter:card" content="summary_large_image">
+    <link rel="stylesheet" href="./styles.css">
+    <link rel="icon" href="./media/vigil-app-icon.png">
+  </head>
+  <body>
+    <header class="site-header">
+      <a class="brand" href="./" aria-label="Vigil home">
+        <img src="./media/vigil-app-icon.png" alt="">
+        <span>Vigil</span>
+      </a>
+      <nav aria-label="Primary navigation">
+        <a href="#demo">Demo</a>
+        <a href="#why-vigil">Why Vigil</a>
+        <a href="https://github.com/butterlatte-zhang/vigil">GitHub</a>
+      </nav>
+    </header>
+
+    <main>
+      <section class="hero">
+        <div class="eyebrow">Native macOS · Claude Code · Codex · OpenCode</div>
+        <h1>Stop being the message bus for your coding agents.</h1>
+        <p class="hero-copy">
+          Vigil gives your agents a live manager–worker tree. Delegate recursively,
+          steer any node, and let verified summaries roll back to the root—without
+          replacing the native terminal you already trust.
+        </p>
+        <div class="hero-actions">
+          <a
+            class="button button-primary"
+            href="https://github.com/butterlatte-zhang/vigil/releases/latest/download/Vigil-macos.dmg"
+          >
+            Download for macOS
+          </a>
+          <a
+            class="button button-secondary"
+            href="https://www.youtube.com/watch?v=HsmSL7V-QOc"
+          >
+            Watch the demo
+          </a>
+        </div>
+        <p class="requirements">
+          macOS 14+ · Apple Silicon · signed and notarized · requires at least one supported agent CLI
+        </p>
+        <a
+          class="hero-visual"
+          href="https://www.youtube.com/watch?v=HsmSL7V-QOc"
+          aria-label="Watch the Vigil demo on YouTube"
+        >
+          <img src="./media/social-preview.png" alt="The Vigil app icon beside a hierarchical agent tree">
+          <span class="play">▶</span>
+        </a>
+      </section>
+
+      <section class="proof" aria-label="Product highlights">
+        <div><strong>Real agent CLIs</strong><span>Every node keeps its native TUI</span></div>
+        <div><strong>Recursive delegation</strong><span>Managers can spawn managers</span></div>
+        <div><strong>Ground-truth history</strong><span>Replay and resume every node</span></div>
+        <div><strong>Local control</strong><span>No hosted orchestration service</span></div>
+      </section>
+
+      <section id="demo" class="section">
+        <div class="section-heading">
+          <span class="eyebrow">See the tree work</span>
+          <h2>One manager. Multiple agents. One place to steer the work.</h2>
+          <p>
+            Watch a manager split work across Claude Code, Codex, and OpenCode,
+            including a sub-manager that delegates its own branch of the task.
+          </p>
+        </div>
+        <div class="video-shell">
+          <iframe
+            src="https://www.youtube-nocookie.com/embed/HsmSL7V-QOc"
+            title="Vigil demo — a manager agent runs a coding-agent tree"
+            allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share"
+            allowfullscreen
+          ></iframe>
+        </div>
+      </section>
+
+      <section id="why-vigil" class="section">
+        <div class="section-heading">
+          <span class="eyebrow">Why Vigil</span>
+          <h2>Parallel sessions are easy. Coordinated delivery is the hard part.</h2>
+        </div>
+        <div class="feature-grid">
+          <article>
+            <span class="feature-number">01</span>
+            <h3>A hierarchy, not a pile of terminals</h3>
+            <p>
+              Root managers, sub-managers, and leaves have explicit identities and
+              scoped tools. Communication follows the tree, so context stays bounded.
+            </p>
+          </article>
+          <article>
+            <span class="feature-number">02</span>
+            <h3>Take over any node</h3>
+            <p>
+              Vigil hosts each CLI's real TUI. Open a worker, approve a command, steer
+              its plan, or interrupt it without translating through another chat layer.
+            </p>
+          </article>
+          <article>
+            <span class="feature-number">03</span>
+            <h3>Replay what actually happened</h3>
+            <p>
+              Finished trees remain inspectable. Review full node transcripts and
+              resume through Claude, Codex, or OpenCode's native session mechanism.
+            </p>
+          </article>
+        </div>
+      </section>
+
+      <section class="cta">
+        <div>
+          <span class="eyebrow">Open source · GPL-3.0-or-later</span>
+          <h2>Give your coding agents a tree.</h2>
+        </div>
+        <div class="hero-actions">
+          <a
+            class="button button-primary"
+            href="https://github.com/butterlatte-zhang/vigil/releases/latest/download/Vigil-macos.dmg"
+          >
+            Download Vigil
+          </a>
+          <a class="button button-secondary" href="https://github.com/butterlatte-zhang/vigil">
+            View source
+          </a>
+        </div>
+      </section>
+    </main>
+
+    <footer>
+      <span>Built with Vigil agent trees running inside Vigil.</span>
+      <a href="https://github.com/butterlatte-zhang/vigil/issues">Feedback and issues</a>
+    </footer>
+  </body>
+</html>
