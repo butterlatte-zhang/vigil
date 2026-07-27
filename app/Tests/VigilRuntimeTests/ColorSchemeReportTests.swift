@@ -1,10 +1,12 @@
 import XCTest
 @testable import VigilRuntime
 
-/// mode-2031 dark-cell notification: a live ghostty surface answers a scheme flip itself
-/// (a DEC mode 2031 subscriber gets an unsolicited `ESC[?997;1n`/`;2n`); a background cell
-/// may never build one, so nobody would ever tell the agent the terminal's scheme changed.
-/// These tests cover the three pieces `GhosttyViewBackend` wires together —
+/// mode-2031 dark-cell notification: the host sends an unsolicited `ESC[?997;1n`/`;2n` to a
+/// DEC mode 2031 subscriber on every real theme flip, unconditionally — mounted or not. Round 1
+/// (2026-07-27) gated this on `!hasSurface`, trusting a live ghostty surface's own broadcast to
+/// inform a MOUNTED cell's child process; `vigil-colorflip` disproved that (a mounted surface's
+/// own push was observed stuck reporting the wrong scheme, see `ColorSchemeReport.shouldSend`'s
+/// doc), so round 2 removed the gate. These tests cover the three pieces `GhosttyViewBackend` wires together —
 /// the DEC mode 2031 read (`VtScreen`/`HostScreenParser`), the change-only observer
 /// (`TerminalColorSource`), and the encode + send-gate (`ColorSchemeReport`) — independently
 /// of `GhosttyViewBackend` itself, which is macOS-surface-only and no-ops under XCTest (the
@@ -103,44 +105,41 @@ final class ColorSchemeReportTests: XCTestCase {
 
     // MARK: - c) integration: gate + encode + observer wired together, fake pty sink
 
-    /// Wires the exact same three collaborators `GhosttyViewBackend` does (parser mode read,
-    /// observer, gate, encode) around a plain `Data` sink standing in for `HostPTY.write` —
-    /// `InMemoryTerminalSession.currentSurface` cannot be driven non-nil here without a live
-    /// ghostty surface (setSurface is package-internal to VigilGhosttyTerminal), so
-    /// `hasSurface` is threaded through directly, matching how `ColorSchemeReport.shouldSend`
-    /// was factored out for exactly this reason.
+    /// Wires the exact same collaborators `GhosttyViewBackend` does (parser mode read,
+    /// observer, gate, encode) around a plain `Data` sink standing in for `HostPTY.write`.
+    /// No `hasSurface` parameter — round 2 (2026-07-27, `vigil-colorflip`) proved a mounted
+    /// surface's own broadcast cannot be trusted to inform its child process, so the host push
+    /// now runs unconditionally, mounted or not (see `ColorSchemeReport.shouldSend`).
     private final class Sink {
         private(set) var writes: [Data] = []
         func write(_ data: Data) { writes.append(data) }
     }
 
-    private func wire(parser: HostScreenParser, source: TerminalColorSource,
-                       hasSurface: @escaping () -> Bool, sink: Sink) {
+    private func wire(parser: HostScreenParser, source: TerminalColorSource, sink: Sink) {
         source.addObserver { terminalTheme in
-            guard ColorSchemeReport.shouldSend(modeOn: parser.colorSchemeReportMode,
-                                               hasSurface: hasSurface()) else { return }
+            guard ColorSchemeReport.shouldSend(modeOn: parser.colorSchemeReportMode) else { return }
             sink.write(ColorSchemeReport.encode(isDark: terminalTheme == "dark"))
         }
     }
 
-    func testIntegrationModeOnNoSurfaceThemeChangeSendsReport() {
+    func testIntegrationModeOnThemeChangeSendsReport() {
         let parser = HostScreenParser(cols: 80, rows: 24)
         parser.feed(Data("\u{1B}[?2031h".utf8))
         let source = TerminalColorSource()
         let sink = Sink()
-        wire(parser: parser, source: source, hasSurface: { false }, sink: sink)
+        wire(parser: parser, source: source, sink: sink)
 
         source.update(terminalTheme: "dark", foreground: nil, background: nil)
 
         XCTAssertEqual(sink.writes, [Data("\u{1B}[?997;1n".utf8)])
     }
 
-    func testIntegrationModeOnNoSurfaceLightFlipSendsCode2() {
+    func testIntegrationModeOnLightFlipSendsCode2() {
         let parser = HostScreenParser(cols: 80, rows: 24)
         parser.feed(Data("\u{1B}[?2031h".utf8))
         let source = TerminalColorSource()
         let sink = Sink()
-        wire(parser: parser, source: source, hasSurface: { false }, sink: sink)
+        wire(parser: parser, source: source, sink: sink)
 
         source.update(terminalTheme: "light", foreground: nil, background: nil)
 
@@ -151,48 +150,16 @@ final class ColorSchemeReportTests: XCTestCase {
         let parser = HostScreenParser(cols: 80, rows: 24)   // never subscribed to 2031
         let source = TerminalColorSource()
         let sink = Sink()
-        wire(parser: parser, source: source, hasSurface: { false }, sink: sink)
+        wire(parser: parser, source: source, sink: sink)
 
         source.update(terminalTheme: "dark", foreground: nil, background: nil)
 
         XCTAssertEqual(sink.writes, [], "agent never opted into mode 2031 — host must stay silent")
     }
 
-    func testIntegrationSurfaceAttachedSendsNothing() {
-        let parser = HostScreenParser(cols: 80, rows: 24)
-        parser.feed(Data("\u{1B}[?2031h".utf8))
-        let source = TerminalColorSource()
-        let sink = Sink()
-        wire(parser: parser, source: source, hasSurface: { true }, sink: sink)
-
-        source.update(terminalTheme: "dark", foreground: nil, background: nil)
-
-        XCTAssertEqual(sink.writes, [],
-                        "a surface owns its own broadcast — a host duplicate would double-notify")
-    }
-
-    // MARK: - e) shouldNudgeRedraw: background-cell staleness nudge (2026-07-27)
-
-    func testShouldNudgeRedrawTrueWhenNoSurface() {
-        XCTAssertTrue(ColorSchemeReport.shouldNudgeRedraw(hasSurface: false))
-    }
-
-    func testShouldNudgeRedrawFalseWhenSurfaceAttached() {
-        XCTAssertFalse(ColorSchemeReport.shouldNudgeRedraw(hasSurface: true),
-                        "an attached surface already gets its own repaint via ghostty_surface_update_config — a host nudge would be redundant")
-    }
-
-    /// Unlike `shouldSend`, `shouldNudgeRedraw` does NOT gate on mode-2031 subscription: an
-    /// agent with no mode-2031 support (codex, confirmed real-binary) still benefits from a
-    /// plain resize nudge, and an agent that already gets the mode-2031 push is unharmed by
-    /// also receiving a harmless resize (the same nudge `handleSurfaceAttach` already sends
-    /// every agent kind on every attach).
-    func testShouldNudgeRedrawIgnoresMode2031() {
-        XCTAssertTrue(ColorSchemeReport.shouldNudgeRedraw(hasSurface: false))
-    }
-
-    // MARK: - f) integration: theme flip on a background cell nudges redraw alongside (or
-    // instead of) the mode-2031 push, mirroring how GhosttyViewBackend wires both together.
+    // MARK: - e) integration: theme flip nudges redraw alongside (or instead of) the
+    // mode-2031 push, mirroring how GhosttyViewBackend wires both together — unconditionally,
+    // mounted or not (see the class doc for why the mounted case is no longer special-cased).
 
     private final class NudgeCounter {
         private(set) var count = 0
@@ -200,42 +167,38 @@ final class ColorSchemeReportTests: XCTestCase {
     }
 
     private func wireBoth(parser: HostScreenParser, source: TerminalColorSource,
-                          hasSurface: @escaping () -> Bool, sink: Sink, nudge: NudgeCounter) {
+                          sink: Sink, nudge: NudgeCounter) {
         source.addObserver { terminalTheme in
-            let hasSurfaceNow = hasSurface()
-            if ColorSchemeReport.shouldSend(modeOn: parser.colorSchemeReportMode,
-                                            hasSurface: hasSurfaceNow) {
+            if ColorSchemeReport.shouldSend(modeOn: parser.colorSchemeReportMode) {
                 sink.write(ColorSchemeReport.encode(isDark: terminalTheme == "dark"))
             }
-            if ColorSchemeReport.shouldNudgeRedraw(hasSurface: hasSurfaceNow) {
-                nudge.nudge()
-            }
+            nudge.nudge()
         }
     }
 
-    func testIntegrationBackgroundCellNoMode2031StillGetsNudgedOnFlip() {
+    func testIntegrationNoMode2031StillGetsNudgedOnFlip() {
         // codex: never subscribes to mode-2031, so `shouldSend` never fires for it — the nudge
-        // is its ONLY path to ever hear about a live theme change while backgrounded.
+        // is its ONLY path to ever hear about a live theme change.
         let parser = HostScreenParser(cols: 80, rows: 24)
         let source = TerminalColorSource()
         let sink = Sink()
         let nudge = NudgeCounter()
-        wireBoth(parser: parser, source: source, hasSurface: { false }, sink: sink, nudge: nudge)
+        wireBoth(parser: parser, source: source, sink: sink, nudge: nudge)
 
         source.update(terminalTheme: "dark", foreground: nil, background: nil)
 
         XCTAssertEqual(sink.writes, [], "codex never opted into mode-2031 — no push expected")
-        XCTAssertEqual(nudge.count, 1, "a backgrounded codex-like cell must still get nudged so it re-queries OSC 10/11 on its own")
+        XCTAssertEqual(nudge.count, 1, "a cell must always get nudged so a codex-shaped agent re-queries OSC 10/11 on its own — mounted or not")
     }
 
-    func testIntegrationBackgroundCellMode2031AgentGetsBothPushAndNudge() {
+    func testIntegrationMode2031AgentGetsBothPushAndNudge() {
         // claude/opencode: subscribed to mode-2031 — gets the push AND the harmless nudge.
         let parser = HostScreenParser(cols: 80, rows: 24)
         parser.feed(Data("\u{1B}[?2031h".utf8))
         let source = TerminalColorSource()
         let sink = Sink()
         let nudge = NudgeCounter()
-        wireBoth(parser: parser, source: source, hasSurface: { false }, sink: sink, nudge: nudge)
+        wireBoth(parser: parser, source: source, sink: sink, nudge: nudge)
 
         source.update(terminalTheme: "dark", foreground: nil, background: nil)
 
@@ -243,26 +206,12 @@ final class ColorSchemeReportTests: XCTestCase {
         XCTAssertEqual(nudge.count, 1)
     }
 
-    func testIntegrationAttachedSurfaceGetsNeitherPushNorNudge() {
-        let parser = HostScreenParser(cols: 80, rows: 24)
-        parser.feed(Data("\u{1B}[?2031h".utf8))
-        let source = TerminalColorSource()
-        let sink = Sink()
-        let nudge = NudgeCounter()
-        wireBoth(parser: parser, source: source, hasSurface: { true }, sink: sink, nudge: nudge)
-
-        source.update(terminalTheme: "dark", foreground: nil, background: nil)
-
-        XCTAssertEqual(sink.writes, [], "a live surface owns its own broadcast")
-        XCTAssertEqual(nudge.count, 0, "a live surface already gets its own repaint — no host nudge needed")
-    }
-
     func testIntegrationNudgeFiresOncePerActualFlipNotPerRepublish() {
         let parser = HostScreenParser(cols: 80, rows: 24)
         let source = TerminalColorSource()
         let sink = Sink()
         let nudge = NudgeCounter()
-        wireBoth(parser: parser, source: source, hasSurface: { false }, sink: sink, nudge: nudge)
+        wireBoth(parser: parser, source: source, sink: sink, nudge: nudge)
 
         source.update(terminalTheme: "dark", foreground: nil, background: nil)
         source.update(terminalTheme: "dark", foreground: "rgb:1/1/1", background: "rgb:2/2/2")  // accent-only republish

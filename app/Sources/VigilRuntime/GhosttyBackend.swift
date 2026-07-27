@@ -245,37 +245,33 @@ public final class GhosttyViewBackend: TerminalBackend {
         }
         self.oscResponder = responder
 
-        // mode-2031 dark-cell notification: a live surface answers a scheme flip itself
-        // (per-surface broadcast); THIS cell may never build one (surfaces build lazily), so
-        // nobody would ever tell the agent the terminal's scheme changed. Gate on the
-        // agent's own mode-2031 subscription (parser.colorSchemeReportMode) AND the
-        // absence of an attached surface — a surface existing means its own broadcast
-        // owns the report, and a host-sent duplicate would be a double notification, not
-        // a missing one. weak-captures only (never `[weak self]`): the callback can fire
-        // from any thread, and `parser`/`session`/`pty` are the actual thread-safe
-        // objects the write touches, not main-actor state on `self`.
-        //
-        // Stale-background-cell nudge (2026-07-27 root-codex-dark-block investigation): an
-        // agent with no mode-2031 subscription (codex, confirmed by a real-binary PTY A/B) can
-        // still be told to re-theme via a plain resize — it re-queries OSC 10/11 and repaints
-        // its explicit-RGB message boxes on SIGWINCH, the exact nudge `handleSurfaceAttach`
-        // already sends on every attach. A background cell that goes long stretches (days) with
-        // no attach never gets that nudge on a live flip, so it stays frozen at whatever
-        // palette was current at its last attach/boot. `shouldNudgeRedraw` fires this on every
-        // real flip regardless of mode-2031 (harmless extra resize for an agent that already
-        // got the push) so a long-idle background cell's staleness is bounded to "since the
-        // last flip" instead of "since the last attach".
+        // mode-2031 dark-cell notification + stale-cell redraw nudge: unconditional on
+        // hasSurface, MOUNTED or not (2026-07-27 theme-flip-residue round 2 — see
+        // vigil-colorflip). Round 1 gated both on `!hasSurface`, trusting ghostty's own
+        // per-surface broadcast (`TerminalColorSchemeBroadcast` → `ghostty_surface_set_
+        // color_scheme` + `ghostty_surface_update_config`) to own the report AND the redraw
+        // for a MOUNTED surface. `vigil-colorflip` — a real GhosttyViewBackend surface driven
+        // through the exact production `TerminalController.setColorScheme` call — disproved
+        // that: across dark→light→dark flips, with the resolved config's own background line
+        // correctly alternating (212121/F7F7F7) and with the OS-level NSApp.appearance forced
+        // both ways, the surface's own unsolicited `CSI ?997;n` push to the child PTY was
+        // observed STUCK at `;2n` (light) every time regardless of the requested scheme, and
+        // no SIGWINCH ever reached the child. So a mounted surface's own broadcast can be
+        // trusted to repaint ITS OWN rendering (confirmed: the config background does flip),
+        // but not to inform the child process — the same host-authoritative push a background
+        // cell already gets is the only reliable channel, mounted or not. A live surface
+        // additionally receiving a redundant (if briefly wrong) push from ghostty's own
+        // broadcast is harmless — this host push always runs after it and wins.
+        // weak-captures only (never `[weak self]`): the callback can fire from any thread, and
+        // `parser`/`pty` are the actual thread-safe objects the write touches, not main-actor
+        // state on `self`.
         if let colors {
-            let token = colors.addObserver { [weak parser, weak session, weak pty] terminalTheme in
-                guard let parser, let session, let pty else { return }
-                let hasSurface = session.currentSurface != nil
-                if ColorSchemeReport.shouldSend(modeOn: parser.colorSchemeReportMode,
-                                                hasSurface: hasSurface) {
+            let token = colors.addObserver { [weak parser, weak pty] terminalTheme in
+                guard let parser, let pty else { return }
+                if ColorSchemeReport.shouldSend(modeOn: parser.colorSchemeReportMode) {
                     pty.write(ColorSchemeReport.encode(isDark: terminalTheme == "dark"))
                 }
-                if ColorSchemeReport.shouldNudgeRedraw(hasSurface: hasSurface) {
-                    pty.nudgeRedraw()
-                }
+                pty.nudgeRedraw()
             }
             colorSchemeObserver = (colors, token)
         }

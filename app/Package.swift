@@ -106,6 +106,15 @@ let package = Package(
             name: "vigil-winrepro",
             dependencies: ["VigilRuntime", "VigilGhosttyTerminal"],
             path: "Sources/vigil-winrepro"),
+        // 2026-07-27 theme-flip-residue investigation (Tier-2 manual, like vigil-winrepro):
+        // drives the real TerminalController.setColorScheme broadcast against a MOUNTED
+        // GhosttyViewBackend surface with a synthetic mode-2031-subscribed PTY child, to test
+        // whether a live surface's own broadcast actually delivers CSI ?997/a redraw nudge.
+        // See Sources/vigil-colorflip/main.swift.
+        .executableTarget(
+            name: "vigil-colorflip",
+            dependencies: ["VigilRuntime", "VigilGhosttyTerminal"],
+            path: "Sources/vigil-colorflip"),
         .testTarget(name: "VigilCoreTests", dependencies: ["VigilCore"]),
         .testTarget(name: "VigilShimCoreTests", dependencies: ["VigilShimCore"]),
         .testTarget(name: "VigilRuntimeTests", dependencies: ["VigilRuntime", "VigilCore"],

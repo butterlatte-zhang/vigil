@@ -175,11 +175,16 @@ public final class TerminalController {
     ///
     /// A surface still needs an explicit `ghostty_surface_set_color_scheme` push — the
     /// app-level call alone does not reach surfaces that never attach a view (a backgrounded
-    /// cell). Ghostty answers a subscribed TUI's DEC mode 2031 registration by emitting
-    /// `CSI ?997;n`, which `InMemoryTerminalSession.writeHandler` carries back into the agent's
-    /// PTY so it can re-query and redraw on its own. A trailing `onRenderRequest` nudges a
-    /// repaint immediately rather than waiting on that round trip for whichever surface is
-    /// actually on screen.
+    /// cell). This DOES correctly repaint that surface's own rendering (confirmed: its
+    /// resolved config's background line alternates with the requested scheme) — but, per a
+    /// real-mounted-surface investigation with `vigil-colorflip` (2026-07-27), do NOT rely on
+    /// it to reliably inform the CHILD PROCESS: the unsolicited `CSI ?997;n` a DEC-mode-2031
+    /// subscriber expects from this call was observed stuck reporting light regardless of the
+    /// requested scheme, and no SIGWINCH ever reaches the child either way. The caller
+    /// (`GhosttyViewBackend`'s color-scheme observer) sends its own host-authoritative report +
+    /// redraw nudge unconditionally — mounted or not — as the actual channel the child can
+    /// trust. A trailing `onRenderRequest` nudges a repaint immediately rather than waiting on
+    /// any round trip for whichever surface is actually on screen.
     @discardableResult
     func setColorScheme(
         _ scheme: TerminalColorScheme,
