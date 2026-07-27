@@ -948,6 +948,47 @@ final class AppModel {
         projectID == settingsProject.id ? launcherPrefill : nil
     }
 
+    /// One project's unsubmitted launcher input — text plus its attachment chips. Chips
+    /// live only inside a live NSTextView's NSTextStorage (LauncherPrompt.swift), never in
+    /// a plain string, so `attachments` is the ordered URL list
+    /// PromptNSTextView.currentAttachmentURLs()/restoreDraft() use to snapshot and rebuild
+    /// them.
+    struct LauncherDraft: Equatable {
+        var text: String
+        var attachments: [URL] = []
+        var isEmpty: Bool { text.isEmpty && attachments.isEmpty }
+    }
+
+    /// In-memory cache of not-yet-submitted launcher input, keyed by project id.
+    /// LauncherView's text/chips live only in its local @State (LauncherPromptModel), which
+    /// SwiftUI tears down the instant the center pane swaps to a session/history pane
+    /// (AppBody.center is an if/else-if over mutually exclusive view types) — this
+    /// dictionary is what survives that teardown so switching back to the same project's
+    /// launcher restores what was typed. Session-only (never persisted): unlike
+    /// SidebarUIRecord's fold/selection chrome, losing a draft across an app restart is fine.
+    private(set) var launcherDrafts: [String: LauncherDraft] = [:]
+
+    func launcherDraft(for projectID: String) -> LauncherDraft? {
+        launcherDrafts[projectID]
+    }
+
+    /// LauncherView.onDisappear's save point. An empty draft is evicted rather than
+    /// stored, so a project visited and left blank never resurrects a stale draft later.
+    func saveLauncherDraft(projectID: String, text: String, attachments: [URL]) {
+        let draft = LauncherDraft(text: text, attachments: attachments)
+        if draft.isEmpty {
+            launcherDrafts.removeValue(forKey: projectID)
+        } else {
+            launcherDrafts[projectID] = draft
+        }
+    }
+
+    /// LauncherView.submit's clear point — a dispatched task must not linger as a ghost
+    /// draft.
+    func clearLauncherDraft(for projectID: String) {
+        launcherDrafts.removeValue(forKey: projectID)
+    }
+
     /// Reconfigure launchers intentionally open blank, but every submitted Settings task
     /// still needs the same guide discovery across Claude/Codex/OpenCode. Only the two
     /// canonical, already-prefixed forms bypass wrapping: merely mentioning README.md (even

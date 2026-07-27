@@ -384,6 +384,59 @@ final class LauncherPromptTests: XCTestCase {
         XCTAssertEqual(tv.string, "abc", "Cmd+Z fully restores (including the replaced selection text)")
     }
 
+    // MARK: - draft round-trip (launcher input cache across a session switch)
+
+    func testCurrentAttachmentURLs_walksChipsInOrder() {
+        let (tv, _, _) = makeBound("look: ")
+        tv.setSelectedRange(NSRange(location: (tv.string as NSString).length, length: 0))
+        tv.attachChips(for: [URL(fileURLWithPath: "/tmp/a.png"), URL(fileURLWithPath: "/tmp/b.png")])
+        XCTAssertEqual(tv.currentAttachmentURLs(),
+                       [URL(fileURLWithPath: "/tmp/a.png"), URL(fileURLWithPath: "/tmp/b.png")],
+                       "the snapshot must walk chips left-to-right, matching insertion order")
+    }
+
+    func testCurrentAttachmentURLs_emptyWhenNoChips() {
+        let (tv, _, _) = makeBound("plain text, no chips")
+        XCTAssertEqual(tv.currentAttachmentURLs(), [])
+    }
+
+    func testRestoreDraft_rebuildsChipsFromCachedURLs() {
+        // The counterpart to attachChips: given the plain text (with its U+FFFC
+        // placeholders) and the URL list captured by currentAttachmentURLs, restoreDraft
+        // must reconstruct real chips — not leave bare placeholder characters behind —
+        // so expandedText() still substitutes the escaped path at submit.
+        let (tv, _, _) = makeBound("")
+        tv.attachChips(for: [URL(fileURLWithPath: "/tmp/a.png"), URL(fileURLWithPath: "/tmp/b.png")])
+        let text = tv.string
+        let urls = tv.currentAttachmentURLs()
+
+        let (fresh, _, _) = makeBound("")
+        fresh.restoreDraft(text: text, attachments: urls)
+
+        XCTAssertEqual(fresh.string, text, "restored plain string matches the cached draft")
+        XCTAssertEqual(fresh.currentAttachmentURLs(), urls, "restored chips carry the same URLs, in order")
+        XCTAssertEqual(fresh.expandedText(), tv.expandedText(),
+                       "a restored chip must expand to the escaped path at submit, exactly like a freshly-pasted one")
+    }
+
+    func testRestoreDraft_plainTextOnly_noAttachments() {
+        let (tv, _, _) = makeBound("")
+        tv.restoreDraft(text: "just some text", attachments: [])
+        XCTAssertEqual(tv.string, "just some text")
+        XCTAssertEqual(tv.expandedText(), "just some text")
+    }
+
+    func testModel_consumeDraftAttachments_isOneShot() {
+        let model = LauncherPromptModel(text: "\u{FFFC}", draftAttachments: [URL(fileURLWithPath: "/tmp/a.png")])
+        XCTAssertEqual(model.consumeDraftAttachments(), [URL(fileURLWithPath: "/tmp/a.png")])
+        XCTAssertNil(model.consumeDraftAttachments(), "a second call must not re-run reconstruction")
+    }
+
+    func testModel_consumeDraftAttachments_nilWhenNoneCached() {
+        let model = LauncherPromptModel(text: "plain")
+        XCTAssertNil(model.consumeDraftAttachments())
+    }
+
     func testModel_submissionTextPrefersHostExpansion() {
         let (tv, _, _) = makeBound("")
         tv.attachChips(for: [URL(fileURLWithPath: "/tmp/q.png")])

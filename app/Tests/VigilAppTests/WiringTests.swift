@@ -494,6 +494,78 @@ final class WiringTests: XCTestCase {
         XCTAssertNil(app.activeSessionID)
     }
 
+    // MARK: - launcher draft cache (unsent input survives a switch-away-and-back)
+
+    /// Typing into the launcher, switching to a different center-pane state (which tears
+    /// LauncherView's @State down — AppBody.center is an if/else-if over mutually
+    /// exclusive view types), then switching back must restore the unsent text.
+    func testLauncherDraft_survivesSwitchAwayAndBack() throws {
+        let app = makeApp()
+        let p = addProject(app)
+        app.openLauncher(in: p.id)
+        let launcher = LauncherView(app: app, project: p)
+        var field = try launcher.inspect().find(LauncherPromptField.self).actualView()
+        field.model.text = "an unsent task brief"
+
+        try launcher.inspect().find(ViewType.VStack.self).callOnDisappear()   // simulates the center pane swapping away
+        XCTAssertEqual(app.launcherDraft(for: p.id)?.text, "an unsent task brief",
+                       "leaving the launcher must stash the unsubmitted text")
+
+        let reopened = LauncherView(app: app, project: p)
+        field = try reopened.inspect().find(LauncherPromptField.self).actualView()
+        XCTAssertEqual(field.model.text, "an unsent task brief",
+                       "reopening the same project's launcher must restore the draft")
+    }
+
+    /// A blank launcher left and revisited must not manufacture a stale draft out of
+    /// nothing.
+    func testLauncherDraft_emptyTextLeavesNoDraft() throws {
+        let app = makeApp()
+        let p = addProject(app)
+        app.openLauncher(in: p.id)
+        let launcher = LauncherView(app: app, project: p)
+
+        try launcher.inspect().find(ViewType.VStack.self).callOnDisappear()
+
+        XCTAssertNil(app.launcherDraft(for: p.id))
+    }
+
+    /// A previously-cached draft must not resurrect after it is cleared out from under it
+    /// (e.g. by a later empty visit) — the empty visit evicts the stale entry.
+    func testLauncherDraft_clearedByASubsequentEmptyVisit() throws {
+        let app = makeApp()
+        let p = addProject(app)
+        app.openLauncher(in: p.id)
+        app.saveLauncherDraft(projectID: p.id, text: "old draft", attachments: [])
+        XCTAssertNotNil(app.launcherDraft(for: p.id))
+
+        let launcher = LauncherView(app: app, project: p, initialTask: "placeholder-avoids-restoring-old-draft")
+        // Overwrite the restored @State back to empty before leaving, as if the user
+        // deleted everything they'd typed.
+        let field = try launcher.inspect().find(LauncherPromptField.self).actualView()
+        field.model.text = ""
+        try launcher.inspect().find(ViewType.VStack.self).callOnDisappear()
+
+        XCTAssertNil(app.launcherDraft(for: p.id), "an emptied launcher must evict the stale cached draft")
+    }
+
+    /// Dispatching the task must not leave a ghost draft behind for the next visit —
+    /// submit clears the cache, and the onDisappear that follows (center pane swapping to
+    /// the new session) must not resave the just-cleared (now empty) text as a new draft.
+    func testLauncherDraft_clearedBySubmit() throws {
+        try assertFakeSeamActive()
+        let app = makeApp()
+        let p = addProject(app)
+        app.openLauncher(in: p.id)
+        app.saveLauncherDraft(projectID: p.id, text: "stale leftover", attachments: [])
+        let launcher = LauncherView(app: app, project: p, initialTask: "go build the thing")
+
+        try tapButton(launcher, "launcher.submit")
+        try launcher.inspect().find(ViewType.VStack.self).callOnDisappear()   // the session becoming active tears this view down
+
+        XCTAssertNil(app.launcherDraft(for: p.id), "a dispatched task must not linger as a draft")
+    }
+
     /// Row taps: sidebar session row → focus that session; tree-panel node row → select
     /// that node in its session; sidebar project row (non-current) → switch project
     /// (no session ⇒ launcher state).

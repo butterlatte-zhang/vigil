@@ -25,6 +25,9 @@ struct LauncherView: View {
     // the title and the selector chips stop rebuilding per keystroke.
     @State private var prompt: LauncherPromptModel
     @State private var agent: String
+    /// Set inside submit() so the onDisappear that follows (the center pane swapping to
+    /// the freshly-launched session) does not resave the just-cleared text as a new draft.
+    @State private var didSubmit = false
 
     // Test seam (T1b): ViewInspector cannot mutate @State on a view that is not hosted
     // in a window, so wiring tests inject the launcher's starting agent here. Production
@@ -35,10 +38,15 @@ struct LauncherView: View {
          initialTask: String = "", initialAgent: String? = nil) {
         self.app = app
         self.project = project
+        // A caller-supplied initialTask (test seam / one-shot navigation) always wins;
+        // otherwise restore an unsubmitted draft left behind by a prior visit to this
+        // project's launcher, falling back to the onboarding prefill.
+        let draft = initialTask.isEmpty ? app.launcherDraft(for: project.id) : nil
         _prompt = State(initialValue: LauncherPromptModel(
             text: initialTask.isEmpty
-                ? (app.launcherPrefill(for: project.id) ?? "")
-                : initialTask))
+                ? (draft?.text ?? app.launcherPrefill(for: project.id) ?? "")
+                : initialTask,
+            draftAttachments: draft?.attachments ?? []))
         _agent = State(initialValue: initialAgent ?? app.defaultAgent)
     }
 
@@ -63,6 +71,16 @@ struct LauncherView: View {
             if prompt.text.isEmpty, let p = app.launcherPrefill(for: project.id) {
                 prompt.text = p
             }
+        }
+        .onDisappear {
+            // The center pane swapping to a session/history pane tears this view (and its
+            // @State LauncherPromptModel) down entirely — stash whatever wasn't submitted
+            // so switching back to this project's launcher restores it. Skipped right after
+            // a real submit (didSubmit): that text has already been dispatched and cleared,
+            // there is nothing to save.
+            guard !didSubmit else { return }
+            app.saveLauncherDraft(projectID: project.id, text: prompt.text,
+                                  attachments: prompt.host?.currentAttachmentURLs() ?? [])
         }
     }
 
@@ -178,6 +196,8 @@ struct LauncherView: View {
         // Access/model are not chosen here — all-on default + roles.json per-role tier.
         app.launchSession(in: project.id, task: prompt.submissionText, agent: agent)
         app.launcherPrefill = nil   // one-shot: the onboarding prompt was sent
+        didSubmit = true
+        app.clearLauncherDraft(for: project.id)
         prompt.text = ""
     }
 }

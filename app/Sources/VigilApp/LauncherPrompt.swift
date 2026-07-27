@@ -36,8 +36,29 @@ final class LauncherPromptModel {
     /// escaped paths at submit — CenterView2.submit reads here, not text. No host (no chip /
     /// pure logic test) = text itself.
     @ObservationIgnored weak var host: PromptNSTextView?
+    /// Attachment URLs to splice back into `text`'s U+FFFC placeholders (one per
+    /// placeholder, left-to-right) — set only when this model seeds from a cached launcher
+    /// draft (AppModel.launcherDraft). Chips live only inside a live NSTextView's
+    /// NSTextStorage (see PromptAttachment below), never in a plain string, so restoring
+    /// them needs this side channel alongside `text`.
+    @ObservationIgnored private var draftAttachments: [URL]
+    @ObservationIgnored private var draftConsumed = false
     var submissionText: String { host?.expandedText() ?? text }
-    init(text: String = "") { self.text = text }
+
+    init(text: String = "", draftAttachments: [URL] = []) {
+        self.text = text
+        self.draftAttachments = draftAttachments
+    }
+
+    /// One-shot: PromptTextView.makeNSView consumes the pending draft attachments the
+    /// first time it mounts a host, nil afterwards (and whenever there is nothing to
+    /// restore) — a later plain reassignment of `text` (e.g. clear-on-submit) must not
+    /// re-run chip reconstruction.
+    func consumeDraftAttachments() -> [URL]? {
+        guard !draftConsumed, !draftAttachments.isEmpty else { return nil }
+        draftConsumed = true
+        return draftAttachments
+    }
 }
 
 /// The launcher's multiline task input area: representable + placeholder + AX container.
@@ -114,7 +135,11 @@ struct PromptTextView: NSViewRepresentable {
         model?.host = tv
         applyStyle(tv)
         Self.styleScroller(scroll, knob: knobColor, hover: knobColorHover)
-        Self.sync(tv, to: text)
+        if let attachments = model?.consumeDraftAttachments() {
+            tv.restoreDraft(text: text, attachments: attachments)
+        } else {
+            Self.sync(tv, to: text)
+        }
         return scroll
     }
 
@@ -350,6 +375,43 @@ final class PromptNSTextView: NSTextView {
             }
         }
         return out
+    }
+
+    /// Rebuild chips from a cached draft: `text` carries one U+FFFC placeholder per chip
+    /// (left-to-right), `attachments` supplies the matching URLs in the same order — the
+    /// reconstruction a restored launcher draft needs, since chips exist only in this
+    /// view's NSTextStorage, never in a plain string (see `currentAttachmentURLs` below,
+    /// its snapshot-side counterpart).
+    func restoreDraft(text: String, attachments: [URL]) {
+        guard let storage = textStorage else { return }
+        let result = NSMutableAttributedString()
+        var pending = attachments[...]
+        for scalar in text.unicodeScalars {
+            if scalar == Unicode.Scalar(0xFFFC), let url = pending.first {
+                pending = pending.dropFirst()
+                result.append(NSAttributedString(attachment: PromptAttachment(fileURL: url)))
+            } else {
+                result.append(NSAttributedString(string: String(scalar), attributes: typingAttributes))
+            }
+        }
+        storage.setAttributedString(result)
+        didChangeText()
+        let end = NSRange(location: (string as NSString).length, length: 0)
+        setSelectedRange(end)
+        scrollRangeToVisible(end)
+    }
+
+    /// Ordered attachment URLs walking this document's chips left-to-right — read before
+    /// this view is torn down (LauncherView.onDisappear) to snapshot a launcher draft,
+    /// since chips exist only here. Paired with `restoreDraft` above.
+    func currentAttachmentURLs() -> [URL] {
+        guard let storage = textStorage, storage.length > 0 else { return [] }
+        var urls: [URL] = []
+        storage.enumerateAttribute(.attachment, in: NSRange(location: 0, length: storage.length)) {
+            value, _, _ in
+            if let chip = value as? PromptAttachment { urls.append(chip.localURL) }
+        }
+        return urls
     }
 
     // Drag uses the same normalization: files/images → chips; everything else passes through
