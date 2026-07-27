@@ -254,14 +254,28 @@ public final class GhosttyViewBackend: TerminalBackend {
         // a missing one. weak-captures only (never `[weak self]`): the callback can fire
         // from any thread, and `parser`/`session`/`pty` are the actual thread-safe
         // objects the write touches, not main-actor state on `self`.
+        //
+        // Stale-background-cell nudge (2026-07-27 root-codex-dark-block investigation): an
+        // agent with no mode-2031 subscription (codex, confirmed by a real-binary PTY A/B) can
+        // still be told to re-theme via a plain resize — it re-queries OSC 10/11 and repaints
+        // its explicit-RGB message boxes on SIGWINCH, the exact nudge `handleSurfaceAttach`
+        // already sends on every attach. A background cell that goes long stretches (days) with
+        // no attach never gets that nudge on a live flip, so it stays frozen at whatever
+        // palette was current at its last attach/boot. `shouldNudgeRedraw` fires this on every
+        // real flip regardless of mode-2031 (harmless extra resize for an agent that already
+        // got the push) so a long-idle background cell's staleness is bounded to "since the
+        // last flip" instead of "since the last attach".
         if let colors {
             let token = colors.addObserver { [weak parser, weak session, weak pty] terminalTheme in
                 guard let parser, let session, let pty else { return }
-                let shouldSend = ColorSchemeReport.shouldSend(
-                    modeOn: parser.colorSchemeReportMode,
-                    hasSurface: session.currentSurface != nil)
-                guard shouldSend else { return }
-                pty.write(ColorSchemeReport.encode(isDark: terminalTheme == "dark"))
+                let hasSurface = session.currentSurface != nil
+                if ColorSchemeReport.shouldSend(modeOn: parser.colorSchemeReportMode,
+                                                hasSurface: hasSurface) {
+                    pty.write(ColorSchemeReport.encode(isDark: terminalTheme == "dark"))
+                }
+                if ColorSchemeReport.shouldNudgeRedraw(hasSurface: hasSurface) {
+                    pty.nudgeRedraw()
+                }
             }
             colorSchemeObserver = (colors, token)
         }

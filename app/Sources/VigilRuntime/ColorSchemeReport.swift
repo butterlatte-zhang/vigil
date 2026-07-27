@@ -20,6 +20,29 @@ enum ColorSchemeReport {
         modeOn && !hasSurface
     }
 
+    /// The host-nudge decision for agents with NO mode-2031 subscription that instead
+    /// re-query OSC 10/11 (and repaint) on a plain terminal resize — confirmed by a
+    /// real-binary PTY A/B against codex 0.145.0 (2026-07-27 root-codex-dark-block
+    /// investigation): it re-queries on boot and on SIGWINCH, never spontaneously while idle,
+    /// and bakes the answer as an EXPLICIT truecolor background on its message boxes
+    /// (`48;2;244;244;244` light / `48;2;30;30;30` dark) rather than the terminal's live
+    /// default — so once printed, that box is frozen until the process is nudged again.
+    /// `GhosttyViewBackend` already sends exactly this nudge (`HostPTY.nudgeRedraw`, a
+    /// SIGWINCH double-pulse) on every surface ATTACH; a background cell that goes long
+    /// stretches between attaches (spanning a day/night appearance flip while nobody is
+    /// looking) never gets nudged on its own and stays stuck at whatever palette was live at
+    /// its last attach/boot. Firing this on every real flip bounds that staleness to "since
+    /// the last flip" instead of "since the last attach". Unconditional on mode-2031 (unlike
+    /// `shouldSend` above) — a claude/opencode cell that already gets the push notification
+    /// harmlessly receives a resize alongside it (the same nudge `handleSurfaceAttach` already
+    /// sends them without issue); an agent that ignores resizes entirely is simply unaffected.
+    /// A surface existing means IT is the live display and already gets its own repaint via
+    /// `TerminalColorSchemeBroadcast`/`ghostty_surface_update_config` — a host-sent nudge
+    /// would be redundant there, not a missing one (mirrors `shouldSend`'s surface gate).
+    static func shouldNudgeRedraw(hasSurface: Bool) -> Bool {
+        !hasSurface
+    }
+
     /// A fixed 16-byte buffer comfortably covers the encoded sequence (9 bytes); the
     /// precondition below is a canary for a future libghostty-vt wire-format change, not a
     /// runtime possibility.
