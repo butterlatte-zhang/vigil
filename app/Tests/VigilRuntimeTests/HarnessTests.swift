@@ -1266,6 +1266,31 @@ final class HarnessTests: XCTestCase {
         XCTAssertNil(s.env["COLORFGBG"])
     }
 
+    /// Root-cause regression: each sub-harness's base env starts from
+    /// `ProcessInfo.processInfo.environment` (PATH/HOME/etc. passthrough) — if Vigil's OWN
+    /// process inherited a `COLORFGBG` from whatever terminal launched it (common; most
+    /// emulators export one for the shell — this is exactly what made
+    /// testColorFgBgAbsentWhenNoColorSourceProvided/testColorFgBgAbsentWhenThemeNotYetResolved
+    /// flaky depending on the ambient dev/CI shell, not test order), an unresolved theme must
+    /// still strip it rather than let that ambient, context-irrelevant value pass through.
+    /// This drives the overlay directly with a spec that already carries a leaked value, so
+    /// the assertion does not depend on this process's own ambient environment either way.
+    func testColorFgBgOverlay_stripsAmbientLeakWhenThemeUnresolved() {
+        let leaked = LaunchSpec(executable: "/c", args: [], env: ["COLORFGBG": "0;15", "PATH": "/bin"])
+        let cleaned = DispatchHarness.applyTerminalColorFgBg(to: leaked, resolvedTheme: nil)
+        XCTAssertNil(cleaned.env["COLORFGBG"],
+                     "an unresolved theme must strip any COLORFGBG already in the base env, " +
+                     "not just skip adding a new one")
+        XCTAssertEqual(cleaned.env["PATH"], "/bin", "unrelated env entries must survive untouched")
+    }
+
+    func testColorFgBgOverlay_resolvedThemeOverwritesAmbientLeak() {
+        let leaked = LaunchSpec(executable: "/c", args: [], env: ["COLORFGBG": "0;15"])
+        let cleaned = DispatchHarness.applyTerminalColorFgBg(to: leaked, resolvedTheme: "dark")
+        XCTAssertEqual(cleaned.env["COLORFGBG"], "15;0",
+                       "a resolved theme must win outright over whatever was already present")
+    }
+
     func testRolesAccessAcceptsFriendlyAliases() {
         // PermissionMode(configString:) parses loosely: aliases like "full"/"read-only" work.
         let (cfg, cwd) = makeUserConfig(

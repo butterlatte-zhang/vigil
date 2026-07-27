@@ -217,14 +217,27 @@ public struct DispatchHarness: Harness {
     /// Overlay `COLORFGBG` onto an already-built `LaunchSpec` — the single assembly point for
     /// all three kinds, so the light/dark → "fg;bg" mapping (`TerminalColorFgBg`) lives in
     /// exactly one place rather than being duplicated across ClaudeCodeHarness/CodexHarness/
-    /// OpenCodeHarness. Additive only: never touches `args`/`initialPrompt`, and never touches
-    /// claude's `theme` settings key or the OSC 10/11 + DEC 2031 self-heal chain those three
-    /// harnesses already own. `resolvedTheme` unresolved/nil → no-op (spec unchanged), same
-    /// "nothing to give, give nothing" honesty as the model chain.
+    /// OpenCodeHarness. Additive only for `args`/`initialPrompt`, and never touches claude's
+    /// `theme` settings key or the OSC 10/11 + DEC 2031 self-heal chain those three harnesses
+    /// already own.
+    ///
+    /// `resolvedTheme` unresolved/nil MUST mean an absent `COLORFGBG`, not "whatever was
+    /// already in `spec.env`": each sub-harness builds its base env starting from Vigil's own
+    /// `ProcessInfo.processInfo.environment` (for PATH/HOME/etc. passthrough), so if Vigil's
+    /// own process happens to have inherited a `COLORFGBG` (e.g. `swift run`/`swift test`
+    /// launched from a terminal that exports one for its shell — most emulators do), that
+    /// ambient, context-irrelevant value would otherwise leak straight into the child agent's
+    /// env even though nothing here ever resolved an actual theme for THAT agent's session.
+    /// This overlay is the one place that decides `COLORFGBG` authoritatively, so it must
+    /// remove any pre-existing key, not just skip adding a new one — same "nothing to give,
+    /// give nothing" honesty as the model chain.
     static func applyTerminalColorFgBg(to spec: LaunchSpec, resolvedTheme: String?) -> LaunchSpec {
-        guard let value = TerminalColorFgBg.value(forTheme: resolvedTheme) else { return spec }
         var env = spec.env
-        env["COLORFGBG"] = value
+        if let value = TerminalColorFgBg.value(forTheme: resolvedTheme) {
+            env["COLORFGBG"] = value
+        } else {
+            env.removeValue(forKey: "COLORFGBG")
+        }
         return LaunchSpec(executable: spec.executable, args: spec.args, env: env,
                           initialPrompt: spec.initialPrompt)
     }
