@@ -882,6 +882,16 @@ final class AppModel {
     /// drag handle, persisted. App-global (one height for every session's panel).
     var bottomShellHeight: CGFloat = 260
     var toast: String?
+    /// Sparkle-reported available version (nil = no update known). Plain @Observable state —
+    /// same tier as `toast`/`railCollapsed`, not orchestration state, so it never touches
+    /// Command/Effect. Driven by `updateController`'s callbacks; the sidebar pill and the
+    /// Settings About & Update row both just read this.
+    var updateAvailableVersion: String? = nil
+    /// Sparkle wiring (or an inert stand-in — see UpdateAvailability's two-layer dev/test
+    /// guard). Defaults to the inert stand-in; init() upgrades it to the real controller only
+    /// when both guards clear. @ObservationIgnored: it drives `updateAvailableVersion` via
+    /// callback, it isn't itself observed state.
+    @ObservationIgnored private(set) var updateController: UpdateChecking = NullUpdateController()
 
     // The config dir is the only settings surface — no settings page.
     // These are the APPLIED values: loaded at bootstrap, hot-reloaded by the watcher.
@@ -1022,7 +1032,8 @@ final class AppModel {
     static let agentTerminalTheme = ClaudeCodeHarness.terminalTheme
     private struct ProjectRecord: Codable { var id: String; var name: String; var cwd: String }
 
-    init(configStore: ConfigStore? = nil, appearanceSource: SystemAppearanceSource? = nil) {
+    init(configStore: ConfigStore? = nil, appearanceSource: SystemAppearanceSource? = nil,
+         updateController: UpdateChecking? = nil) {
         let store = configStore ?? ConfigStore(dir: ConfigStore.defaultDir)
         self.configStore = store
         self.configInjected = configStore != nil
@@ -1063,6 +1074,17 @@ final class AppModel {
         // A live OS light⇄dark flip re-resolves the theme (only while
         // follow-system). Wired last so the closure captures a fully-formed self.
         self.appearanceSource.onChange = { [weak self] in self?.systemAppearanceChanged() }
+        // Same "wired last" reasoning: an injected controller (tests) always wins; otherwise
+        // the two-layer guard (XCTest host / bare `swift run`) decides whether the real
+        // Sparkle controller is even constructed. The default NullUpdateController from the
+        // property declaration covers every guarded-off case — nothing to do there.
+        if let updateController {
+            self.updateController = updateController
+        } else if UpdateAvailability.updatesEnabled() {
+            self.updateController = SparkleUpdateController(
+                onUpdateAvailable: { [weak self] version in self?.updateAvailableVersion = version },
+                onNoUpdateAvailable: { [weak self] in self?.updateAvailableVersion = nil })
+        }
     }
 
     // MARK: derived
@@ -1088,6 +1110,20 @@ final class AppModel {
     }
 
     var tokens: VGTokens { .make(theme, accent) }
+
+    /// Human-facing app version for the Settings About & Update row. "dev" under a bare
+    /// `swift run Vigil` build — Package.swift's linker-embedded Vigil-Info.plist carries
+    /// only Name/DisplayName/Identifier, no version, and a "dev" label is honest here (this
+    /// is also the build the update subsystem is permanently inert for, see UpdateAvailability).
+    static func appVersionString(bundle: Bundle = .main) -> String {
+        bundle.infoDictionary?["CFBundleShortVersionString"] as? String ?? "dev"
+    }
+    var appVersion: String { Self.appVersionString() }
+
+    /// The one "run the standard Sparkle update UI flow" action, shared verbatim by the
+    /// sidebar pill and both Settings buttons (Check for Updates / Update Now) — see
+    /// UpdateChecking.checkForUpdates doc comment for why there's only one entry point.
+    func checkForUpdates() { updateController.checkForUpdates() }
 
     /// Resolve the exact pair used by both VGGhosttyTheme.configuration and the host's OSC
     /// stand-in. This is evaluated after every theme/accent/prefs change, never frozen into a
@@ -1173,6 +1209,13 @@ final class AppModel {
             if currentProjectID == nil, let first = projects.first {
                 openLauncher(in: first.id)
             }
+        }
+        // No-op on NullUpdateController (dev/test/guarded-off). Deliberately outside the
+        // UITestSupport.enabled early return too — T2 XCUITest drives a real packaged .app
+        // (shell/VigilShell), so the bundle-form guard alone would not stop it; automated UI
+        // runs must never fire a real network check either.
+        if !UITestSupport.enabled {
+            updateController.startPeriodicChecking()
         }
     }
 

@@ -27,6 +27,10 @@ let package = Package(
         // exact (D14; self-built pipeline deferred to M4).
         .package(url: "https://github.com/Lakr233/libghostty-spm", exact: "1.2.8"),
         .package(url: "https://github.com/Lakr233/MSDisplayLink.git", from: "2.1.0"),
+        // Auto-update engine (issue: Sparkle integration). Pinned exact, same discipline as
+        // libghostty-spm above; bump deliberately alongside the vendored CLI tools in
+        // .claude/skills/release-package/.sparkle-tools/ (those aren't SPM products, see SKILL.md).
+        .package(url: "https://github.com/sparkle-project/Sparkle", exact: "2.9.4"),
         // Test-only (VigilAppTests): T1b view wiring + T1c snapshots
         .package(url: "https://github.com/nalexn/ViewInspector", from: "0.10.0"),
         .package(url: "https://github.com/pointfreeco/swift-snapshot-testing", from: "1.17.0"),
@@ -51,7 +55,10 @@ let package = Package(
             exclude: ["LICENSE"]),
         .target(
             name: "VigilRuntime",
-            dependencies: ["VigilCore", "GhosttyVT", "VigilGhosttyTerminal"]),
+            dependencies: [
+                "VigilCore", "GhosttyVT", "VigilGhosttyTerminal",
+                .product(name: "Sparkle", package: "Sparkle"),
+            ]),
         // Library (not executable) so BOTH entry shells can link it: the SwiftPM stub
         // `Vigil` and the Xcode thin shell `shell/VigilShell` (T2).
         .target(
