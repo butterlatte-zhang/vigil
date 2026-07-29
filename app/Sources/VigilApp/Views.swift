@@ -82,11 +82,18 @@ struct AppBody: View {
             // are mutually exclusive — AppModel clears one when the other is set).
             HistoryPane(app: app, summary: h)
         } else if let p = app.current {
-            LauncherView(app: app, project: p)
-                // LauncherView owns its prompt as @State. Give each project a distinct
-                // identity so a first-run Settings prefill cannot survive an in-place
-                // project-menu switch and get submitted into an ordinary repository.
-                .id(p.id)
+            VStack(spacing: 0) {
+                // Settings is a pseudo-project (files, not a page — see the header comment);
+                // this is its one piece of real chrome, pinned above the launcher.
+                if p.id == app.settingsProject.id {
+                    AboutUpdatePanel(app: app)
+                }
+                LauncherView(app: app, project: p)
+                    // LauncherView owns its prompt as @State. Give each project a distinct
+                    // identity so a first-run Settings prefill cannot survive an in-place
+                    // project-menu switch and get submitted into an ordinary repository.
+                    .id(p.id)
+            }
         } else {
             NoProjectView(app: app)
         }

@@ -43,6 +43,23 @@ elements, so attaching an id directly is fine — this step isn't needed for the
 | `launcher.submit` | submit `Button` (↑ round button) | launches the manager, ⌘Enter |
 | `launcher.noAgentBanner` | zero-hit warning `Text` (settings-v2) | appears when probing finds no agent CLI at all; submit stays enabled (agents.json lets you fill in a bin by hand) |
 
+## about (Settings launcher's About & Update panel, `CenterView2.swift` AboutUpdatePanel — Sparkle integration)
+
+Settings is "files, not a page" (see the `side` section's history note below) — this panel is
+the one deliberate exception: mounted in `AppBody.center` (`Views.swift`) above the Settings
+project's `LauncherView` whenever `project.id == app.settingsProject.id`. Everything here is
+plain `@Observable` AppModel state (`updateAvailableVersion`, same tier as `toast`), never
+Command/Effect — see `VigilRuntime/UpdateController.swift` for the Sparkle wiring and the
+dev-immunity guard (`UpdateAvailability`, gates the WHOLE subsystem off under a bare
+`swift run Vigil` and under XCTest).
+
+| id | attached to | notes |
+|---|---|---|
+| `settings.about.panel` | panel container (AX container) | wraps the whole row; always present while Settings is open (unlike the sidebar pill, this has no empty state) |
+| `settings.about.version` | version `Text` | "Version \<CFBundleShortVersionString\>", or "Version dev" under a bare `swift run` build (no version key in the linker-embedded partial Info.plist) |
+| `settings.about.checkForUpdates` | `Button`, shown when `updateAvailableVersion == nil` | click = `AppModel.checkForUpdates()` — runs Sparkle's standard check/found/install UI |
+| `settings.about.updateNow` | `Button`, shown when `updateAvailableVersion != nil` (replaces the above, never both) | same `AppModel.checkForUpdates()` action — Sparkle already knows the version, so this click goes straight into the install flow |
+
 ## side / rail (left sidebar, `SidebarView.swift`)
 
 | id | attached to | notes |
@@ -59,6 +76,7 @@ elements, so attaching an id directly is fine — this step isn't needed for the
 | `rail.project.<projectId>.newSession` | in-row pencil button | visible on hover/selection only; opens that project's launcher |
 | `rail.session.<sessionId>` | session row `Button` | sessionId = SessionVM.id (isomorphic across project groups and the chats/settings sections) |
 | `rail.session.<sessionId>.status.<state>` | in-row status indicator (Shape/SpinnerRing) | state ∈ attention (yellow dot: waiting/unread) / live (spinner: running/starting only) / done (blue dot: finished and unseen — only lights up on the live→rest transition while unfocused; clears on row click) — the 0708 product ruling (aligned with Codex), replacing #8's persistent rest dot; **an already-read rest state has no indicator at all (blank)**. ⚠️ Attached directly to the Shape, visible to T1b; if T2 XCUITest needs to query it, add `accessibilityElement` per the container convention |
+| `side.updateAvailable` | update pill `Button` (Sparkle integration) | pinned rows, directly below Search and above the Projects section header; renders only while `AppModel.updateAvailableVersion` is non-nil (zero footprint otherwise — no reserved row), text "Update · \<version\>"; click = `AppModel.checkForUpdates()`, the same flow as the two Settings buttons below |
 | `side.resizeHandle` | 8pt drag strip on the right edge | drag to resize the sidebar width (180–420, persisted) (0706) |
 | `side.history.<archiveId>` | dead-session row `Button` (#17 → #24-lite W4 → fix-round 0708 redefined) | archiveId = the stable directory name; **grouped under its owning project** (matched via meta.projectCwd; orphans are not shown); the status slot is left blank (the grey `…status.dead` dot was removed with 0708②'s three-state scheme); **click = open the read-only history view (self-rendered transcript); Enter is only a resume once inside that view** |
 | `side.group.<projectId>.showAll` | "Show all (N)" / "Collapse" `Button` at the end of the group (W4, D-f) | appears when a group's merged rows (live+dead) exceed 5; no cap and never shown while searching; the Archived section uses the fixed projectId `builtin-archived` |

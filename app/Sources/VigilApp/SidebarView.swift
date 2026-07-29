@@ -99,6 +99,12 @@ struct SidebarView: View {
                 }
                 .accessibilityIdentifier("side.search")
             }
+
+            // Zero footprint when there's no known update — no reserved row, no dead space.
+            if let version = app.updateAvailableVersion {
+                UpdatePill(vg: vg, version: version, action: { app.checkForUpdates() })
+                    .accessibilityIdentifier("side.updateAvailable")
+            }
         }
         .padding(EdgeInsets(top: 2, leading: 8, bottom: 4, trailing: 8))
     }
@@ -623,6 +629,36 @@ private struct SideRow<C: View>: View {
         }
         .buttonStyle(.plain)
         .onHover { hover = $0 }
+    }
+}
+
+/// Sidebar update pill — "Update · 0.1.3" — rendered only while an update is known
+/// (AppModel.updateAvailableVersion), directly below Search and above the Projects group
+/// header. Click runs the same standard-Sparkle-UI flow as the Settings buttons
+/// (AppModel.checkForUpdates).
+private struct UpdatePill: View {
+    let vg: VGTokens
+    let version: String
+    let action: () -> Void
+    @State private var hover = false
+
+    var body: some View {
+        Button(action: action) {
+            HStack(spacing: 6) {
+                Image(systemName: "arrow.down.circle.fill")
+                    .font(.system(size: 12, weight: .medium))
+                Text("Update · \(version)")
+                    .font(VGFont.ui(12.5, weight: .medium))
+                Spacer(minLength: 0)
+            }
+            .foregroundStyle(vg.accent)
+            .padding(EdgeInsets(top: 6, leading: 10, bottom: 6, trailing: 10))
+            .background(vg.accent.opacity(hover ? 0.18 : 0.12), in: RoundedRectangle(cornerRadius: 8))
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .onHover { hover = $0 }
+        .help("A new Vigil version is available")
     }
 }
 

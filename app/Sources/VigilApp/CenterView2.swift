@@ -248,6 +248,52 @@ private struct SelectorChip<Prefix: View>: View {
     }
 }
 
+// MARK: - About & Update (Settings' one piece of real chrome)
+
+/// Settings is "files, not a page" (AppBody's header comment) — this panel is the sole
+/// exception, pinned above the Settings launcher: current app version + update controls.
+/// Both buttons run the identical flow (AppModel.checkForUpdates(), same as the sidebar
+/// pill) — Sparkle's own standard UI takes it from there. "Update Now" only replaces
+/// "Check for Updates" once a version is actually known, never both at once.
+struct AboutUpdatePanel: View {
+    let app: AppModel
+    @Environment(\.vg) private var vg
+
+    var body: some View {
+        HStack(spacing: 12) {
+            VStack(alignment: .leading, spacing: 2) {
+                Text("Vigil").font(VGFont.ui(13.5, weight: .semibold)).foregroundStyle(vg.text)
+                Text("Version \(app.appVersion)")
+                    .font(VGFont.ui(12)).foregroundStyle(vg.text3)
+                    .accessibilityIdentifier("settings.about.version")
+            }
+            Spacer(minLength: 12)
+            if let available = app.updateAvailableVersion {
+                updateButton(title: "Update to \(available)", axID: "settings.about.updateNow")
+            } else {
+                updateButton(title: "Check for Updates", axID: "settings.about.checkForUpdates")
+            }
+        }
+        .padding(EdgeInsets(top: 14, leading: 18, bottom: 14, trailing: 18))
+        .background(vg.card, in: RoundedRectangle(cornerRadius: 12))
+        .overlay(RoundedRectangle(cornerRadius: 12).strokeBorder(vg.hair, lineWidth: 1))
+        .frame(maxWidth: 620)
+        .padding(EdgeInsets(top: 20, leading: 14, bottom: 0, trailing: 14))
+        .accessibilityElement(children: .contain)
+        .accessibilityIdentifier("settings.about.panel")
+    }
+
+    private func updateButton(title: String, axID: String) -> some View {
+        Button(title) { app.checkForUpdates() }
+            .buttonStyle(.plain)
+            .font(VGFont.ui(12.5, weight: .medium))
+            .foregroundStyle(.white)
+            .padding(EdgeInsets(top: 6, leading: 12, bottom: 6, trailing: 12))
+            .background(vg.accent, in: RoundedRectangle(cornerRadius: 7))
+            .accessibilityIdentifier(axID)
+    }
+}
+
 // MARK: - Terminal pane (SPEC §4.2)
 
 struct TerminalPane: View {
