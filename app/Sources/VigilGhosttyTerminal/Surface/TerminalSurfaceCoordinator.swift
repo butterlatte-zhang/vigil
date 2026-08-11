@@ -9,6 +9,10 @@ import Foundation
 import GhosttyKit
 import MSDisplayLink
 
+#if canImport(AppKit)
+    import AppKit
+#endif
+
 /// Shared terminal state and logic used by both UIKit and AppKit views.
 ///
 /// Platform views own a `TerminalSurfaceCoordinator` instance and set platform-specific
@@ -80,6 +84,71 @@ final class TerminalSurfaceCoordinator {
     /// real display link (which never spins up in an XCTest process).
     private(set) var immediateTickRequestCount = 0
 
+    // MARK: - Wake retry (upstream ghostty discussion #13248 mitigation)
+
+    // VIGIL: while the display is asleep / the login session is locked, the WindowServer
+    // denies CVDisplayLink creation and `ghostty_surface_new` fails wholesale (tolerated
+    // upstream only since ghostty PR #13639 — merge 71c2d68e, in no packaged libghostty
+    // release yet). Vigil's surface is display-only (HOST_MANAGED: the agent process is
+    // HostPTY-owned), so the damage is a blank pane — but the only other retry is the next
+    // layout pulse (`fitToSize`), which may never come on an idle pane. A failed surface
+    // build therefore arms a ONE-SHOT retry on screens-wake / session-unlock; success or
+    // teardown disarms it. Remove once the pinned libghostty contains the upstream fix.
+
+    /// Injection seams for tests. Real defaults: the NSWorkspace center (screens-wake)
+    /// and the distributed center (`com.apple.screenIsUnlocked`).
+    #if canImport(AppKit)
+        var wakeNotificationCenter: NotificationCenter = NSWorkspace.shared.notificationCenter
+        var unlockNotificationCenter: NotificationCenter = DistributedNotificationCenter.default()
+    #else
+        var wakeNotificationCenter = NotificationCenter()
+        var unlockNotificationCenter = NotificationCenter()
+    #endif
+    /// Count of `rebuildIfReady` entries. No production reader; unit tests observe that a
+    /// wake signal drove a retry (same rationale as `immediateTickRequestCount`).
+    private(set) var rebuildAttemptCount = 0
+    /// Live (center, token) subscriptions; non-empty exactly while a retry is armed.
+    private var wakeRetryObservers: [(NotificationCenter, NSObjectProtocol)] = []
+    var wakeRetryArmed: Bool { !wakeRetryObservers.isEmpty }
+
+    private func armWakeRetry() {
+        guard wakeRetryObservers.isEmpty else { return }
+        #if canImport(AppKit)
+            let signals: [(NotificationCenter, Notification.Name)] = [
+                (wakeNotificationCenter, NSWorkspace.screensDidWakeNotification),
+                (unlockNotificationCenter, Notification.Name("com.apple.screenIsUnlocked")),
+            ]
+        #else
+            let signals: [(NotificationCenter, Notification.Name)] = []
+        #endif
+        for (center, name) in signals {
+            // queue nil = synchronous on the posting thread. Both real sources post on
+            // main (NSWorkspace + distributed default), which keeps the retry — and the
+            // tests — deterministic; a hypothetical off-main post hops instead of trapping.
+            let token = center.addObserver(forName: name, object: nil, queue: nil) { [weak self] _ in
+                if Thread.isMainThread {
+                    MainActor.assumeIsolated { self?.wakeRetryFired() }
+                } else {
+                    Task { @MainActor [weak self] in self?.wakeRetryFired() }
+                }
+            }
+            wakeRetryObservers.append((center, token))
+        }
+        TerminalDebugLog.log(.lifecycle, "surface build failed with display unavailable — wake retry armed")
+    }
+
+    private func disarmWakeRetry() {
+        guard !wakeRetryObservers.isEmpty else { return }
+        for (center, token) in wakeRetryObservers { center.removeObserver(token) }
+        wakeRetryObservers.removeAll()
+    }
+
+    private func wakeRetryFired() {
+        TerminalDebugLog.log(.lifecycle, "wake/unlock signal — retrying surface build")
+        disarmWakeRetry() // one-shot; a retry that fails again re-arms in rebuildIfReady
+        rebuildIfReady()
+    }
+
     init() {
         bridge.onCellSizeChange = { [weak self] width, height in
             self?.handleCellSizeChange(width: width, height: height)
@@ -106,6 +175,7 @@ final class TerminalSurfaceCoordinator {
     // MARK: - Surface Lifecycle
 
     func rebuildIfReady(removingBridgeFrom previousController: TerminalController? = nil) {
+        rebuildAttemptCount += 1
         tearDownSurface(removingBridgeFrom: previousController ?? controller)
         guard let controller else {
             TerminalDebugLog.log(.lifecycle, "surface rebuild skipped: missing controller")
@@ -146,6 +216,7 @@ final class TerminalSurfaceCoordinator {
         guard let rawSurface else {
             hostSession?.endAttachGate()
             TerminalDebugLog.log(.lifecycle, "surface rebuild failed")
+            armWakeRetry() // ghostty #13248: locked/asleep display — retry on wake/unlock
             return
         }
 
@@ -356,6 +427,8 @@ final class TerminalSurfaceCoordinator {
     private func tearDownSurface(removingBridgeFrom controller: TerminalController?) {
         TerminalDebugLog.log(.lifecycle, "tear down surface")
         tickScheduled = false
+        disarmWakeRetry() // a fresh rebuild pass re-arms on failure; a dead pane must not
+        // keep retrying on every wake (rebuildIfReady's early-return guards never re-arm)
         if let session = configuration.inMemorySession {
             session.clearSurface(ifMatches: surface?.rawValue)
         }
