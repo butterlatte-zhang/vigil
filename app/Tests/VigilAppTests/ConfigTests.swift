@@ -242,8 +242,12 @@ final class ConfigTests: XCTestCase {
         // The README must carry the roles.json model MAP form (the only way to give
         // different CLI families different models), the read-only→plan alias truth,
         // and keep flagging the deprecated launcher keys.
-        XCTAssertTrue(readme.contains(#"{"claude": "opus", "codex": "<codex model id>"}"#),
-                      "README must document the roles.json model map form (with a placeholder id, not a rot-prone real one)")
+        XCTAssertTrue(readme.contains(#"{"claude": "<claude model alias>", "codex": "<codex model id>"}"#),
+                      "README must document the roles.json model map form (with placeholder ids, not rot-prone real ones)")
+        for token in ["gpt-", "\"opus\"", "\"sonnet\"", "\"haiku\"", "\"fable\""] {
+            XCTAssertFalse(readme.lowercased().contains(token),
+                           "README must not name concrete models — they get copied verbatim and go stale")
+        }
         XCTAssertTrue(readme.contains("`read-only` maps to **plan**"),
                       "README must not sell read-only as an independent level")
         XCTAssertTrue(readme.contains("deprecated and silently ignored"),

@@ -2,10 +2,10 @@ import Foundation
 import VigilRuntime
 
 // Auto-names a session from the title claude itself maintains: claude 2.1.x
-// already runs Haiku over the same conversation and appends the result to the session
-// transcript JSONL as `{"type":"ai-title","aiTitle":"..."}` lines (one per turn; official
-// reader = findLast). A user `/rename` lands as a `custom-title` line and must never be
-// overwritten by the auto title. So instead of spawning our own haiku subprocess we just
+// already runs a small background model over the same conversation and appends the result
+// to the session transcript JSONL as `{"type":"ai-title","aiTitle":"..."}` lines (one per
+// turn; official reader = findLast). A user `/rename` lands as a `custom-title` line and
+// must never be overwritten by the auto title. So instead of running our own naming pass we just
 // read the transcript tail — best-effort, the format is claude-internal and may change;
 // parse failure = keep the current name. File I/O runs off the main actor; the result is
 // applied on it. No throttle beyond in-flight dedup: this is a local file read, zero cost.

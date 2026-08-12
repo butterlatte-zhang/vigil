@@ -94,9 +94,10 @@ public struct AgentRegistry: Equatable, Sendable {
     /// as before. An EXISTING file with an empty {} map is a genuinely empty registry,
     /// not this.
     public static func builtinFallback(claudeBin: String) -> AgentRegistry {
+        // No models list: Vigil never names models itself (an empty list is also inert —
+        // the guard's cross-agent check needs a SECOND entry to ever fire).
         AgentRegistry(entries: [AgentEntry(
-            key: "claude", bin: claudeBin, kind: .claude,
-            models: ["sonnet", "opus", "haiku"])])
+            key: "claude", bin: claudeBin, kind: .claude)])
     }
 
     /// nil = file missing or unparseable (caller falls back to builtinFallback).
@@ -145,9 +146,9 @@ public struct RoleSetting: Equatable, Sendable {
     public var model: String?
     /// The `agent` value in effect (same layer or below) when the current bare `model` was
     /// declared. A HIGHER layer swapping `agent` (e.g. project .vigil sets
-    /// worker.agent="codex" over a global claude+opus) must NOT re-anchor a model it
-    /// never wrote — otherwise a merged {agent:codex, model:opus} silently becomes
-    /// `codex -m opus`, which the CLI rejects.
+    /// worker.agent="codex" over a global claude entry with a bare claude-family model)
+    /// must NOT re-anchor a model it never wrote — otherwise the merged result silently
+    /// hands one family's model name to another CLI's argv, which that CLI rejects.
     /// nil = model declared with no agent in sight → the default family (claude).
     /// Maintained by `merge`, consumed by HarnessResolve (map-form models need no anchor).
     public var modelAnchorAgent: String?

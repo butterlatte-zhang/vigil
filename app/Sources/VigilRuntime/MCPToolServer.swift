@@ -254,10 +254,11 @@ public final class MCPToolServer: @unchecked Sendable {
                     "task": ["type": "string", "description": "the subtask for the child"],
                     "model": ["type": "string",
                               "description": "optional model for the child — this is the agent "
-                                  + "CLI's own model name (e.g. \"opus\", \"gpt-5.1\"), not an "
-                                  + "agent name; the child's agent is decided by roles.json, not "
-                                  + "by this parameter. Must be valid for the agent the child's "
-                                  + "role resolves to; omit = the user-configured default"],
+                                  + "CLI's own model name, not an agent name; the child's agent "
+                                  + "is decided by roles.json, not by this parameter. Must be "
+                                  + "valid for the agent the child's role resolves to. Pass it "
+                                  + "only when the user explicitly named a model — never guess "
+                                  + "or invent one; omit = the user-configured default"],
                     "name": ["type": "string",
                              "description": "optional short display name for the child in "
                                  + "Vigil's node tree (a few words, e.g. \"fix issue-49\"); "

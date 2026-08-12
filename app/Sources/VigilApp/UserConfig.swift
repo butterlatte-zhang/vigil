@@ -445,7 +445,7 @@ final class ConfigStore {
     ```json
     { "root":       { "model": null, "access": null, "promptAppend": "" },
       "subManager": { "agent": null, "model": null, "access": null, "promptAppend": "" },
-      "worker":     { "agent": null, "model": "sonnet", "access": "acceptEdits",
+      "worker":     { "agent": null, "model": "<model-alias>", "access": "acceptEdits",
                       "promptAppend": "@prompts/worker.md" } }
     ```
 
@@ -461,10 +461,10 @@ final class ConfigStore {
       merged root settings declare a bare-string `model`, it only anchors that model to a
       CLI family.
     - `<role>.model`: two accepted shapes —
-      - a bare string (`"opus"`): applies to the CLI family of the agent effective at the
+      - a bare string (`"<model-alias>"`): applies to the CLI family of the agent effective at the
         layer that declares it (no agent declared anywhere = claude). It never crosses
         into another family's command line.
-      - a family map (`{"claude": "opus", "codex": "<codex model id>"}`): the value is
+      - a family map (`{"claude": "<claude model alias>", "codex": "<codex model id>"}`): the value is
         picked by the resolved agent's kind. A family not listed skips this role-level
         source, then continues to the session model and entry `defaultModel`; only when
         those are also absent does the CLI receive no model flag. Prefer leaving codex /
@@ -734,13 +734,14 @@ final class ConfigStore {
        Use what it says and **do not run detection commands yourself**.
        If `found` is empty, help the user install a CLI first, restart Vigil, then come
        back. Using the detected CLIs as your basis, set each role's model in `roles.json`:
-       - **root**: the highest-capability model available. For claude use the stable alias
-         `"opus"`.
+       - **root**: the highest-capability model available.
        - **subManager / worker**: a cheaper-but-capable model — the tree does the bulk work
-         through these, so keep them economical. For claude use `"sonnet"`.
-       - **Prefer stable aliases over dated ids.** claude's `opus` / `sonnet` / `haiku`
-         always resolve to the current model, so they never go stale — always use those for
-         claude rather than a dated `claude-*-YYYYMMDD` id.
+         through these, so keep them economical.
+       - **Prefer stable aliases over dated ids.** claude ships stable tier aliases that
+         always resolve to the current model of that tier, so they never go stale — always
+         use one of those for claude rather than a dated `claude-*-YYYYMMDD` id. Confirm
+         the alias names with the user or the claude CLI itself — never write one from
+         memory without checking.
        - **For codex and opencode, leave the model UNSET** — do not add a `codex` /
          `opencode` key. An empty model means Vigil passes NO model flag, so the CLI runs its
          OWN default, which is by definition the latest that CLI ships. Do NOT hardcode a
@@ -749,11 +750,10 @@ final class ConfigStore {
          explicitly asks for a non-default one, and then confirm the exact current id WITH
          them (or from that CLI's own docs) — never guess it.
        - Model shape (family namespace): the `model` field is a bare string (bound to the
-         declaring layer's family) or a family MAP (e.g. `{"claude": "opus"}`) keyed by the
-         resolved agent's family. A value never crosses into another CLI's command line, so
-         with claude set and codex/opencode left out, each family does the right thing on its
-         own. Never give one family another family's model name (e.g. `codex` must not get
-         `"opus"`).
+         declaring layer's family) or a family MAP (e.g. `{"claude": "<claude model alias>"}`)
+         keyed by the resolved agent's family. A value never crosses into another CLI's
+         command line, so with claude set and codex/opencode left out, each family does the
+         right thing on its own. Never give one family another family's model name.
 
        **Which CLI family runs each role** is the other half of this decision, and it is how
        Vigil's headline heterogeneous-tree feature becomes visible. By default every non-root

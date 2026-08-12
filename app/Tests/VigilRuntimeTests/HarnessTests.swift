@@ -712,6 +712,20 @@ final class HarnessTests: XCTestCase {
         XCTAssertTrue(err!.contains("claude"), "must name the resolved agent: \(err!)")
     }
 
+    func testSpawnModelGuardMessageNamesNoConcreteModelExample() {
+        // The guard's error text once cited a concrete model id as an example — a manager
+        // reading it (or the spawn schema, which carried the same example) copied that exact
+        // string into a spawn for a DIFFERENT CLI family and hit a nonexistent-model 400.
+        // Guidance may say "omit" but must never name a concrete model it cannot know exists.
+        let (cfg, cwd) = makeUserConfig("guardnoexample")
+        let err = dispatchHarness(cfg).spawnModelGuardError(model: "codex", role: .leaf, cwd: cwd)!
+        for token in ["gpt-", "opus", "sonnet", "haiku", "fable"] {
+            XCTAssertFalse(err.lowercased().contains(token), "no concrete model names: \(err)")
+        }
+        XCTAssertFalse(err.contains("e.g."), "model examples go stale and get copied verbatim: \(err)")
+        XCTAssertTrue(err.contains("never guess"), "must tell the caller not to invent model names: \(err)")
+    }
+
     func testSpawnModelGuardRejectsKindNameCaseInsensitiveEvenUnregistered() {
         // "opencode" is a CLI-family name even when no agents.json entry happens to use that
         // exact key — the family-name check is independent of the registry key set. Case
@@ -734,7 +748,7 @@ final class HarnessTests: XCTestCase {
                         "models": ["gpt-5.1-codex", "gpt-5.1-codex-max"] } } }
         """
         let (cfg, cwd) = makeUserConfig("guardcross", agents: agents)
-        // this spawn resolves to claude (no role override) — "gpt-5.1-codex" is codex's model.
+        // this spawn resolves to claude (no role override) — the passed model is codex's listed model.
         let err = dispatchHarness(cfg).spawnModelGuardError(model: "gpt-5.1-codex", role: .leaf, cwd: cwd)
         XCTAssertNotNil(err)
         XCTAssertTrue(err!.contains("codex"), "must name the agent this model actually belongs to: \(err!)")
@@ -775,10 +789,10 @@ final class HarnessTests: XCTestCase {
                                         roles: #"{ "worker": { "agent": "claude" } }"#,
                                         projectRoles: #"{ "worker": { "agent": "codex" } }"#)
         let h = dispatchHarness(cfg)
-        // "opus" is claude's model — fine against the global resolution...
+        // codex's own listed model is fine against the project-overlay resolution...
         XCTAssertNil(h.spawnModelGuardError(model: "gpt-5.1-codex", role: .leaf, cwd: cwd),
                      "the project overlay resolves this worker to codex, so codex's own model passes")
-        // ...but "opus" is now a cross-family hit once the project overlay resolves to codex.
+        // ...but a claude-listed model is a cross-family hit once the overlay resolves to codex.
         let err = h.spawnModelGuardError(model: "opus", role: .leaf, cwd: cwd)
         XCTAssertNotNil(err, "the project overlay changed the resolved agent to codex — opus is claude's model")
         XCTAssertTrue(err!.contains("claude"))

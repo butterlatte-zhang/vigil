@@ -569,6 +569,22 @@ final class GatewayTests: XCTestCase {
         await t.value
     }
 
+    func testMCPSpawnSchemaModelDescriptionCarriesNoModelExampleAndForbidsGuessing() {
+        // The spawn schema's model description once cited a concrete model id as an example —
+        // managers copied it verbatim into spawns for another CLI family (nonexistent model →
+        // 400, dead node). The description must carry the anti-guess rule instead of concrete
+        // model names.
+        let spawnSchema = MCPToolServer.toolSchemas.first { ($0["name"] as? String) == "spawn" }
+        let props = (spawnSchema?["inputSchema"] as? [String: Any])?["properties"] as? [String: Any]
+        let desc = (props?["model"] as? [String: Any])?["description"] as? String ?? ""
+        XCTAssertFalse(desc.isEmpty)
+        for token in ["gpt-", "opus", "sonnet", "haiku", "fable"] {
+            XCTAssertFalse(desc.lowercased().contains(token), "no concrete model names: \(desc)")
+        }
+        XCTAssertFalse(desc.contains("e.g."), "model examples go stale and get copied verbatim: \(desc)")
+        XCTAssertTrue(desc.contains("never guess"), "must tell the manager not to invent model names: \(desc)")
+    }
+
     // MARK: spawn(model) misuse guard wiring (the tool-server side: a rejected guard
     // must short-circuit BEFORE the requestStruct emit, so no node is ever created for it).
 

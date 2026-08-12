@@ -128,8 +128,8 @@ enum HarnessResolve {
         if agentKeyNames.contains(lower) || kindNames.contains(lower) {
             return "\"\(model)\" looks like an agent name, not a model name — the child's agent "
                 + "is decided by roles.json (this spawn resolves to \"\(resolvedName)\"), not by "
-                + "this parameter; omit model to use \(resolvedName)'s own default, or pass an "
-                + "actual model name (e.g. \"opus\", \"gpt-5.1\")."
+                + "this parameter; omit model to use \(resolvedName)'s own default, and never "
+                + "guess a model name — pass one only when the user explicitly named it."
         }
         let resolvedModels = resolved.entry?.models ?? []
         if !resolvedModels.isEmpty, !resolvedModels.contains(model),

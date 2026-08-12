@@ -237,7 +237,7 @@ final class CodexHarnessTests: XCTestCase {
         XCTAssertEqual(modelArg(spec), "gpt-5-codex", "entry.defaultModel fallback")
     }
 
-    // MARK: - model family namespace (a codex root must not pick up a claude alias like "fable")
+    // MARK: - model family namespace (a codex root must not pick up a claude alias)
 
     /// Throwaway config dir: agents.json registers both families + a given roles.json.
     private func makeConfig(_ tag: String, roles: String) -> (cfg: String, cfgRoot: String) {
@@ -265,8 +265,8 @@ final class CodexHarnessTests: XCTestCase {
     }
 
     func testCodexIgnoresClaudeBareRoleModel() {
-        // roles.root.model bare string "fable" (a claude alias) + launcher picks codex →
-        // `codex -m fable` → ChatGPT backend 400 rejection. A bare string defaults to the
+        // roles.root.model bare string carrying a claude alias + launcher picks codex →
+        // `codex -m <claude-alias>` → backend 400 rejection. A bare string defaults to the
         // claude family; the codex side must treat it as unconfigured.
         let (cfg, cfgRoot) = makeConfig("fable", roles: #"{ "root": { "model": "fable" } }"#)
         XCTAssertNil(modelArg(rootSpec(cfg, cfgRoot)),
@@ -294,10 +294,10 @@ final class CodexHarnessTests: XCTestCase {
 
     // MARK: - bare-string model family anchoring across field-level cross-layer merges
 
-    /// Global worker{agent:"claude", model:"opus"} + project .vigil worker{agent:"codex"}:
+    /// Global worker{agent:"claude", model:<claude-alias>} + project .vigil worker{agent:"codex"}:
     /// after the field-level override swaps out the agent, the underlying bare-string model
     /// was written under the claude declaration and must not migrate into the codex family's
-    /// argv — a mismatched family would produce `codex -m opus`, rejected by the ChatGPT
+    /// argv — a mismatched family would hand a claude alias to `codex -m`, rejected by the
     /// backend.
     func testProjectAgentSwapDoesNotMigrateGlobalBareModel() {
         let (cfg, cfgRoot) = makeConfig("xlayer", roles:
