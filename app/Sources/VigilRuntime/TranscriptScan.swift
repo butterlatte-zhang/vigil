@@ -78,18 +78,51 @@ enum TranscriptScan {
     /// the `isApiErrorMessage` flag claude stamps on the entry (reliable), or the literal
     /// "API Error" text in an assistant/system content block (fallback).
     static func hasApiError(inJSONL text: String) -> Bool {
+        apiErrorSnippet(inJSONL: text) != nil
+    }
+
+    /// The matched error text for the FIRST API-error line found (same two anchors as
+    /// `hasApiError`), trimmed and capped to ~200 chars — turn_errored's `reason` field, so a
+    /// dogfood run can be diagnosed from orchestration.jsonl alone instead of hunting through
+    /// the raw transcript. Prefers the line's assistant/system content text; when a line is
+    /// flagged `isApiErrorMessage` but carries no textual content anywhere, falls back to the
+    /// literal anchor itself.
+    static func apiErrorSnippet(inJSONL text: String) -> String? {
         for line in text.split(separator: "\n", omittingEmptySubsequences: true) {
             guard let obj = JSONLine.parse(String(line)) else { continue }
-            if obj["isApiErrorMessage"] as? Bool == true { return true }
-            if let msg = obj["message"] as? [String: Any],
-               let body = assistantOrSystemText(msg["content"]),
-               body.localizedCaseInsensitiveContains("API Error") { return true }
+            let flagged = obj["isApiErrorMessage"] as? Bool == true
+            let bodyText = (obj["message"] as? [String: Any]).flatMap { assistantOrSystemText($0["content"]) }
             // Some system lines carry the text at top level rather than under `message`.
-            if let s = obj["content"] as? String, s.localizedCaseInsensitiveContains("API Error") {
-                return true
-            }
+            let topText = obj["content"] as? String
+            let anchorHit = bodyText?.localizedCaseInsensitiveContains("API Error") == true
+                || topText?.localizedCaseInsensitiveContains("API Error") == true
+            guard flagged || anchorHit else { continue }
+            if let bodyText, !bodyText.isEmpty { return snippet(bodyText) }
+            if let topText, !topText.isEmpty { return snippet(topText) }
+            return snippet("API Error")
         }
-        return false
+        return nil
+    }
+
+    /// Trim + cap to ~200 chars — forensics, not a transcript mirror.
+    private static func snippet(_ s: String) -> String {
+        String(s.trimmingCharacters(in: .whitespacesAndNewlines).prefix(200))
+    }
+
+    /// The `pendingBackgroundAgentCount` of the LAST `{"type":"system","subtype":"turn_duration",…}`
+    /// line in the chunk — claude's own signal that this turn ended while background subagents
+    /// were still running, i.e. the worker is legitimately waiting, not silently idle. nil when no
+    /// such line is present (codex/opencode/older claude never write one) or when the last such
+    /// line carries no count. Tolerant of malformed lines, same posture as every other scan here.
+    static func pendingBackgroundAgents(inJSONL text: String) -> Int? {
+        var last: [String: Any]?
+        for line in text.split(separator: "\n", omittingEmptySubsequences: true) {
+            guard let obj = JSONLine.parse(String(line)),
+                  obj["type"] as? String == "system",
+                  obj["subtype"] as? String == "turn_duration" else { continue }
+            last = obj
+        }
+        return last?["pendingBackgroundAgentCount"] as? Int
     }
 
     // MARK: content extraction

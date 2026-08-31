@@ -1351,6 +1351,13 @@ final class AppModel {
         let root = VigilArchive.root
         DispatchQueue.global(qos: .utility).async { [weak self] in
             let outcomes = OrphanReaper.reapAll(root: root)
+            // Run AFTER the reaper so a session's stray processes are already gone before its
+            // stale live.lock (dead pid, or a hung/crashed instance's heartbeat gone silent for
+            // a full day) is swept — otherwise a dead session could wedge resume forever.
+            let sweptLocks = SessionLock.sweepStale(root: root)
+            for lockPath in sweptLocks {
+                Self.logLiveLockSwept(lockPath)
+            }
             // With every stray child now dead, sweep the dead sessions' codex-home
             // caches (re-downloadable ~38MB/node; live-locked sessions are skipped) —
             // catches hard-kill leftovers and history that stop() never pruned.
@@ -1361,6 +1368,22 @@ final class AppModel {
                 if freed >= 10 << 20 { self?.showToast("Reclaimed \(freed >> 20) MB of codex caches from dead sessions") }
             }
         }
+    }
+
+    /// Forensic line for a swept `live.lock`, into the same session's orchestration.jsonl the
+    /// live orchestrator itself would have written to — the same shape as OrphanReaper's
+    /// `cell_reaped` line. Best-effort: a session dir with no orchestration.jsonl (or one this
+    /// process can't open) is silently skipped, same posture as every other append-log site.
+    private nonisolated static func logLiveLockSwept(_ lockPath: String) {
+        let dir = (lockPath as NSString).deletingLastPathComponent
+        let path = dir + "/orchestration.jsonl"
+        guard let data = try? JSONSerialization.data(withJSONObject:
+            ["event": "live_lock_swept", "path": lockPath, "ts": OrchClock.format(Date())]),
+            let json = String(data: data, encoding: .utf8),
+            let fh = FileHandle(forWritingAtPath: path) else { return }
+        defer { try? fh.close() }
+        _ = try? fh.seekToEnd()
+        try? fh.write(contentsOf: Data((json + "\n").utf8))
     }
 
     /// A project group's dead rows — joined by meta.projectCwd == project.cwd.

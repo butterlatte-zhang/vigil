@@ -139,4 +139,47 @@ final class TranscriptScanTests: XCTestCase {
         XCTAssertTrue(TranscriptScan.containsUserMessage("MESSAGE FROM root: go", inJSONL: jsonl))
         XCTAssertFalse(TranscriptScan.hasApiError(inJSONL: jsonl))
     }
+
+    // MARK: apiErrorSnippet — turn_errored's forensic reason
+
+    func testApiErrorSnippetPrefersBodyText() {
+        let jsonl = """
+        {"type":"assistant","isApiErrorMessage":true,"message":{"role":"assistant","content":[{"type":"text","text":"API Error: Connection closed mid-response"}]}}
+        """
+        XCTAssertEqual(TranscriptScan.apiErrorSnippet(inJSONL: jsonl),
+                       "API Error: Connection closed mid-response")
+    }
+
+    func testApiErrorSnippetNilOnNormalTranscript() {
+        let jsonl = """
+        {"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"all good, done"}]}}
+        """
+        XCTAssertNil(TranscriptScan.apiErrorSnippet(inJSONL: jsonl))
+    }
+
+    // MARK: pendingBackgroundAgents — the report-watchdog's background-agent exemption
+
+    func testPendingBackgroundAgentsLastLineWins() {
+        let jsonl = """
+        {"type":"system","subtype":"turn_duration","pendingBackgroundAgentCount":3}
+        {"type":"system","subtype":"turn_duration","pendingBackgroundAgentCount":0}
+        """
+        XCTAssertEqual(TranscriptScan.pendingBackgroundAgents(inJSONL: jsonl), 0)
+    }
+
+    func testPendingBackgroundAgentsNilWhenAbsent() {
+        let jsonl = """
+        {"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"done"}]}}
+        """
+        XCTAssertNil(TranscriptScan.pendingBackgroundAgents(inJSONL: jsonl))
+    }
+
+    func testPendingBackgroundAgentsSkipsMalformedLines() {
+        let jsonl = """
+        not json at all
+        {broken
+        {"type":"system","subtype":"turn_duration","pendingBackgroundAgentCount":2}
+        """
+        XCTAssertEqual(TranscriptScan.pendingBackgroundAgents(inJSONL: jsonl), 2)
+    }
 }

@@ -126,4 +126,103 @@ final class SessionLockTests: XCTestCase {
         // A pid near the max is exceedingly unlikely to be a running process.
         XCTAssertFalse(SessionLock.pidAlive(999_999), "an almost-certainly-nonexistent pid = dead")
     }
+
+    // MARK: sweepStale — the cross-instance stray-lock janitor
+
+    private func makeRoot() throws -> String {
+        let d = NSTemporaryDirectory() + "vigil_lock_root_\(UUID().uuidString)"
+        try FileManager.default.createDirectory(atPath: d, withIntermediateDirectories: true)
+        tmpDirs.append(d)
+        return d
+    }
+
+    private func makeSessionDir(in root: String, name: String) throws -> String {
+        let d = root + "/" + name
+        try FileManager.default.createDirectory(atPath: d, withIntermediateDirectories: true)
+        return d
+    }
+
+    func testSweepStaleRemovesDeadPidLock() throws {
+        let root = try makeRoot()
+        let now = Date(timeIntervalSince1970: 1_800_000_000)
+        let dir = try makeSessionDir(in: root, name: "dead-pid")
+        SessionLock.write(dir: dir, pid: 4242, now: now)
+
+        let removed = SessionLock.sweepStale(root: root, now: now, pidAlive: { _ in false })
+
+        XCTAssertEqual(removed, [SessionLock.path(dir: dir)])
+        XCTAssertNil(SessionLock.read(dir: dir))
+    }
+
+    func testSweepStaleKeepsAlivePidWithFreshHeartbeat() throws {
+        let root = try makeRoot()
+        let now = Date(timeIntervalSince1970: 1_800_000_000)
+        let dir = try makeSessionDir(in: root, name: "alive-fresh")
+        SessionLock.write(dir: dir, pid: 99, now: now)
+
+        let removed = SessionLock.sweepStale(root: root, now: now.addingTimeInterval(60),
+                                             pidAlive: { _ in true })
+
+        XCTAssertTrue(removed.isEmpty)
+        XCTAssertNotNil(SessionLock.read(dir: dir))
+    }
+
+    func testSweepStaleKeepsAlivePidWithHeartbeatTwoHoursOld() throws {
+        let root = try makeRoot()
+        let now = Date(timeIntervalSince1970: 1_800_000_000)
+        let dir = try makeSessionDir(in: root, name: "alive-2h")
+        SessionLock.write(dir: dir, pid: 99, now: now)
+
+        let removed = SessionLock.sweepStale(root: root, now: now.addingTimeInterval(2 * 3600),
+                                             pidAlive: { _ in true })
+
+        XCTAssertTrue(removed.isEmpty, "a merely-hung instance under a day old keeps its claim")
+        XCTAssertNotNil(SessionLock.read(dir: dir))
+    }
+
+    func testSweepStaleKeepsAlivePidWithHeartbeat25HoursOld() throws {
+        // isLive already gates the RESUME question on heartbeat freshness (>5min stale =
+        // not live) — a stale lock file never wedges anything on its own, so sweeping is
+        // pure hygiene. A heartbeat-age rule here would risk deleting a genuinely LIVE
+        // instance's claim (e.g. a laptop lid closed for two days with Vigil open, the
+        // harvester timer paused) right as a second instance starts on wake — zero gain,
+        // nonzero split-brain window. Only a provably dead pid is ever removed.
+        let root = try makeRoot()
+        let now = Date(timeIntervalSince1970: 1_800_000_000)
+        let dir = try makeSessionDir(in: root, name: "alive-25h")
+        SessionLock.write(dir: dir, pid: 99, now: now)
+
+        let removed = SessionLock.sweepStale(root: root, now: now.addingTimeInterval(25 * 3600),
+                                             pidAlive: { _ in true })
+
+        XCTAssertTrue(removed.isEmpty,
+                      "an alive pid is never removed, no matter how old the heartbeat")
+        XCTAssertNotNil(SessionLock.read(dir: dir))
+    }
+
+    func testSweepStaleLeavesGarbageFileAlone() throws {
+        let root = try makeRoot()
+        let dir = try makeSessionDir(in: root, name: "garbage")
+        try Data("not valid json".utf8).write(to: URL(fileURLWithPath: SessionLock.path(dir: dir)))
+
+        let removed = SessionLock.sweepStale(root: root, pidAlive: { _ in false })
+
+        XCTAssertTrue(removed.isEmpty)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: SessionLock.path(dir: dir)))
+    }
+
+    func testSweepStaleReturnsAllRemovedPaths() throws {
+        let root = try makeRoot()
+        let now = Date(timeIntervalSince1970: 1_800_000_000)
+        let deadDir = try makeSessionDir(in: root, name: "dead-1")
+        let aliveDir = try makeSessionDir(in: root, name: "alive-1")
+        SessionLock.write(dir: deadDir, pid: 111, now: now)
+        SessionLock.write(dir: aliveDir, pid: 222, now: now)
+
+        let removed = SessionLock.sweepStale(root: root, now: now,
+                                             pidAlive: { $0 == 222 })
+
+        XCTAssertEqual(Set(removed), [SessionLock.path(dir: deadDir)])
+        XCTAssertNotNil(SessionLock.read(dir: aliveDir))
+    }
 }

@@ -544,6 +544,30 @@ final class OrchestratorTests: XCTestCase {
         XCTAssertEqual(routes.last?["to"] as? String, "root")
         // text is a bounded prefix — forensics, not a transcript mirror.
         XCTAssertEqual(routes.first?["text"] as? String, "MESSAGE FROM root: go")
+        // provenance: viaPath[0] is the sender (§6.3) — a message from root carries "from":
+        // root, a rollup from the child carries "from": the child.
+        XCTAssertEqual(routes.first?["from"] as? String, "root")
+        XCTAssertEqual(routes.last?["from"] as? String, child.raw)
+    }
+
+    func testRollupRouteEventKeepsTextBeyond80Chars() async throws {
+        // A rollup IS the report itself — worth more than the 80-char forensic snippet every
+        // other route kind gets (message/system/perm_review), so a dogfood run can be read
+        // straight off orchestration.jsonl.
+        let (orch, dir) = makeOrchestrator()
+        defer { orch.stop(); try? FileManager.default.removeItem(atPath: dir) }
+        try orch.start(rootTask: "")
+        let child = spawnChild(orch)
+        let longSummary = String(repeating: "x", count: 300)
+
+        orch.store.send(.rollup(from: child, summary: longSummary))
+
+        let route = try XCTUnwrap(orchEvents(dir).first { $0["event"] as? String == "route" && $0["kind"] as? String == "rollup" })
+        XCTAssertEqual(route["from"] as? String, child.raw)
+        XCTAssertEqual(route["to"] as? String, "root")
+        let text = try XCTUnwrap(route["text"] as? String)
+        XCTAssertEqual(text, String(("CHILD_ROLLUP:" + longSummary).prefix(400)))
+        XCTAssertGreaterThan(text.count, 80)
     }
 
     // MARK: API-error turn-death visibility (Fix B) + honest send-delivery wiring (Fix A)
@@ -571,7 +595,9 @@ final class OrchestratorTests: XCTestCase {
 
         XCTAssertEqual(orch.store.tree[child]?.status, .errored, "an API-killed turn = its own .errored state")
         let events = orchEvents(dir)
-        XCTAssertTrue(events.contains { $0["event"] as? String == "turn_errored" && $0["node"] as? String == child.raw })
+        let errored = try XCTUnwrap(events.first { $0["event"] as? String == "turn_errored" && $0["node"] as? String == child.raw })
+        XCTAssertEqual(errored["reason"] as? String, "API Error: Connection closed mid-response",
+                       "turn_errored carries the matched error text — jsonl-only diagnosis, no transcript hunt")
         try await waitUntil("the parent received a system notification") {
             rootBackend.sent.contains { $0.contains("API error") && $0.contains(child.raw) }
         }
@@ -1202,6 +1228,7 @@ final class OrchestratorTests: XCTestCase {
         // ordinary inject path, and the nudge is forensically logged.
         let (orch, dir) = makeOrchestrator()
         defer { orch.stop(); try? FileManager.default.removeItem(atPath: dir) }
+        orch.watchdogGraceSeconds = 0.05   // deterministic: real grace is only about the turn_duration race
         try orch.start(rootTask: "")
         let child = spawnChild(orch)
         let fb = try XCTUnwrap(orch.registry.backend(child) as? FakeBackend)
@@ -1221,6 +1248,7 @@ final class OrchestratorTests: XCTestCase {
         // Condition (b): a report DID arrive this turn → no nudge, no forensic line.
         let (orch, dir) = makeOrchestrator()
         defer { orch.stop(); try? FileManager.default.removeItem(atPath: dir) }
+        orch.watchdogGraceSeconds = 0.05
         try orch.start(rootTask: "")
         let child = spawnChild(orch)
         let fb = try XCTUnwrap(orch.registry.backend(child) as? FakeBackend)
@@ -1241,6 +1269,7 @@ final class OrchestratorTests: XCTestCase {
         // (no ping-pong).
         let (orch, dir) = makeOrchestrator()
         defer { orch.stop(); try? FileManager.default.removeItem(atPath: dir) }
+        orch.watchdogGraceSeconds = 0.05
         try orch.start(rootTask: "")
         let child = spawnChild(orch)
         let fb = try XCTUnwrap(orch.registry.backend(child) as? FakeBackend)
@@ -1265,6 +1294,7 @@ final class OrchestratorTests: XCTestCase {
         // A report() clears reminderOutstanding — further silence CAN be nudged again.
         let (orch, dir) = makeOrchestrator()
         defer { orch.stop(); try? FileManager.default.removeItem(atPath: dir) }
+        orch.watchdogGraceSeconds = 0.05
         try orch.start(rootTask: "")
         let child = spawnChild(orch)
         let fb = try XCTUnwrap(orch.registry.backend(child) as? FakeBackend)
@@ -1279,6 +1309,10 @@ final class OrchestratorTests: XCTestCase {
         orch.receive(.rollup(from: child, summary: "done"))   // report clears the gate
         orch.receive(.turnEnded(child, gen: nil))              // reported this turn → no nudge
 
+        // A report clears watchdogDelivered too (A2, per-delivery not lifetime) — a genuine
+        // new manager delivery re-arms it, mirroring a real `send` reaching the worker.
+        orch.recordAgentPrompt(child, payload: ["transcript_path": dir + "/child.jsonl",
+                                                "prompt": "MESSAGE FROM root: keep going"])
         orch.receive(.turnStarted(child))
         orch.receive(.turnEnded(child, gen: nil))              // silent again → reminder #2 allowed
 
@@ -1292,6 +1326,7 @@ final class OrchestratorTests: XCTestCase {
         // Root has no parent to report to — immune by construction, regardless of delivery.
         let (orch, dir) = makeOrchestrator()
         defer { orch.stop(); try? FileManager.default.removeItem(atPath: dir) }
+        orch.watchdogGraceSeconds = 0.05
         try orch.start(rootTask: "")
         let rootBackend = try XCTUnwrap(orch.registry.backend(NodeID("root")) as? FakeBackend)
         orch.recordAgentPrompt(NodeID("root"), payload: ["transcript_path": dir + "/root.jsonl"])
@@ -1310,6 +1345,7 @@ final class OrchestratorTests: XCTestCase {
         // never actually asked anything of.
         let (orch, dir) = makeOrchestrator()
         defer { orch.stop(); try? FileManager.default.removeItem(atPath: dir) }
+        orch.watchdogGraceSeconds = 0.05
         try orch.start(rootTask: "")
         let child = spawnChild(orch)
         let fb = try XCTUnwrap(orch.registry.backend(child) as? FakeBackend)
@@ -1336,6 +1372,7 @@ final class OrchestratorTests: XCTestCase {
         addTeardownBlock { RuntimeTuning.current = .defaults }
         let (orch, dir) = makeOrchestrator()
         defer { orch.stop(); try? FileManager.default.removeItem(atPath: dir) }
+        orch.watchdogGraceSeconds = 0.05
         try orch.start(rootTask: "")
         let child = spawnChild(orch)
         let fb = try XCTUnwrap(orch.registry.backend(child) as? FakeBackend)
@@ -1354,6 +1391,7 @@ final class OrchestratorTests: XCTestCase {
         // inject path.
         let (orch, dir) = makeOrchestrator()
         defer { orch.stop(); try? FileManager.default.removeItem(atPath: dir) }
+        orch.watchdogGraceSeconds = 0.05
         try orch.start(rootTask: "")
         let child = spawnChild(orch)
         orch.recordAgentPrompt(child, payload: ["transcript_path": dir + "/child.jsonl"])
@@ -1370,5 +1408,236 @@ final class OrchestratorTests: XCTestCase {
         try await Task.sleep(nanoseconds: 200_000_000)
         XCTAssertTrue(orchEvents(dir).filter { $0["event"] as? String == "report_watchdog" }.isEmpty,
                       "a dead node is never nudged")
+    }
+
+    // MARK: report watchdog — background-agent exemption (A1)
+
+    func testBackgroundAgentsPendingSuppressesWatchdog() async throws {
+        // The evidence-grounded fix: a turn that ended while claude's own turn_duration line
+        // says background subagents are still running is not a silent worker — never nudge it.
+        let (orch, dir) = makeOrchestrator()
+        defer { orch.stop(); try? FileManager.default.removeItem(atPath: dir) }
+        orch.watchdogGraceSeconds = 0.05
+        try orch.start(rootTask: "")
+        let child = spawnChild(orch)
+        let fb = try XCTUnwrap(orch.registry.backend(child) as? FakeBackend)
+        let tpath = dir + "/child.jsonl"
+        orch.recordAgentPrompt(child, payload: ["transcript_path": tpath])
+        orch.receive(.turnStarted(child))
+        writeTranscript(tpath, [
+            #"{"type":"system","subtype":"turn_duration","pendingBackgroundAgentCount":2}"#,
+        ])
+
+        orch.receive(.turnEnded(child, gen: nil))
+
+        try await Task.sleep(nanoseconds: 150_000_000)   // past the grace
+        XCTAssertTrue(orchEvents(dir).filter { $0["event"] as? String == "report_watchdog" }.isEmpty)
+        XCTAssertFalse(fb.sent.contains(Orchestrator.reportWatchdogText))
+        let skipped = orchEvents(dir).filter { $0["event"] as? String == "report_watchdog_skipped" }
+        XCTAssertEqual(skipped.count, 1)
+        XCTAssertEqual(skipped.first?["reason"] as? String, "background_agents_pending")
+        XCTAssertEqual(skipped.first?["count"] as? Int, 2)
+    }
+
+    func testBackgroundAgentsZeroStillTriggersWatchdog() async throws {
+        // Regression guard: a turn_duration line reporting zero pending background agents
+        // must not be mistaken for the exemption — the silent-worker nudge still fires.
+        let (orch, dir) = makeOrchestrator()
+        defer { orch.stop(); try? FileManager.default.removeItem(atPath: dir) }
+        orch.watchdogGraceSeconds = 0.05
+        try orch.start(rootTask: "")
+        let child = spawnChild(orch)
+        let fb = try XCTUnwrap(orch.registry.backend(child) as? FakeBackend)
+        let tpath = dir + "/child.jsonl"
+        orch.recordAgentPrompt(child, payload: ["transcript_path": tpath])
+        orch.receive(.turnStarted(child))
+        writeTranscript(tpath, [
+            #"{"type":"system","subtype":"turn_duration","pendingBackgroundAgentCount":0}"#,
+        ])
+
+        orch.receive(.turnEnded(child, gen: nil))
+
+        try await waitUntil("count 0 is not an exemption") {
+            fb.sent.contains(Orchestrator.reportWatchdogText)
+        }
+        XCTAssertEqual(orchEvents(dir).filter { $0["event"] as? String == "report_watchdog" }.count, 1)
+        XCTAssertTrue(orchEvents(dir).filter { $0["event"] as? String == "report_watchdog_skipped" }.isEmpty)
+    }
+
+    func testTranscriptWithoutTurnDurationLineStillTriggersWatchdog() async throws {
+        // codex / opencode / an older claude never write a turn_duration line — its absence
+        // must never be treated as an exemption.
+        let (orch, dir) = makeOrchestrator()
+        defer { orch.stop(); try? FileManager.default.removeItem(atPath: dir) }
+        orch.watchdogGraceSeconds = 0.05
+        try orch.start(rootTask: "")
+        let child = spawnChild(orch)
+        let fb = try XCTUnwrap(orch.registry.backend(child) as? FakeBackend)
+        let tpath = dir + "/child.jsonl"
+        orch.recordAgentPrompt(child, payload: ["transcript_path": tpath])
+        orch.receive(.turnStarted(child))
+        writeTranscript(tpath, [
+            #"{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"done thinking"}]}}"#,
+        ])
+
+        orch.receive(.turnEnded(child, gen: nil))
+
+        try await waitUntil("no turn_duration line never blocks the nudge") {
+            fb.sent.contains(Orchestrator.reportWatchdogText)
+        }
+        XCTAssertTrue(orchEvents(dir).filter { $0["event"] as? String == "report_watchdog_skipped" }.isEmpty)
+    }
+
+    func testTurnDurationLineWrittenDuringGraceStillSuppresses() async throws {
+        // The race guard: claude's Stop hook (→ .turnEnded) fires BEFORE it appends the
+        // turn_duration line (same-second on real transcripts) — the line lands a beat later,
+        // still well inside the grace window. The deferred check must catch it.
+        let (orch, dir) = makeOrchestrator()
+        defer { orch.stop(); try? FileManager.default.removeItem(atPath: dir) }
+        orch.watchdogGraceSeconds = 0.25
+        try orch.start(rootTask: "")
+        let child = spawnChild(orch)
+        let fb = try XCTUnwrap(orch.registry.backend(child) as? FakeBackend)
+        let tpath = dir + "/child.jsonl"
+        orch.recordAgentPrompt(child, payload: ["transcript_path": tpath])
+        orch.receive(.turnStarted(child))
+        writeTranscript(tpath, [])   // the transcript exists, empty, when the Stop hook fires
+
+        orch.receive(.turnEnded(child, gen: nil))   // Stop hook lands — no turn_duration line yet
+        try await Task.sleep(nanoseconds: 40_000_000)   // still well inside the 0.25s grace
+        writeTranscript(tpath, [
+            #"{"type":"system","subtype":"turn_duration","pendingBackgroundAgentCount":1}"#,
+        ])
+
+        try await Task.sleep(nanoseconds: 350_000_000)   // past the grace
+        XCTAssertTrue(orchEvents(dir).filter { $0["event"] as? String == "report_watchdog" }.isEmpty,
+                      "the deferred check re-reads the transcript, catching the line written mid-grace")
+        XCTAssertFalse(fb.sent.contains(Orchestrator.reportWatchdogText))
+        XCTAssertEqual(orchEvents(dir).filter { $0["event"] as? String == "report_watchdog_skipped" }.count, 1)
+    }
+
+    // MARK: report watchdog — per-delivery arming, not lifetime (A2)
+
+    func testNoNagWithoutNewDeliveryAfterReport() async throws {
+        // watchdogDelivered is per-delivery, not lifetime: after a report answers the
+        // delivery it was asked for, a LATER silent turn with no new manager send/task in
+        // between must not nag — reportedSinceTurnStart only guards the turn the report
+        // itself landed in, so without this the worker's own idle continuation turns would
+        // keep getting nagged forever (the lifetime-set over-nagging bug this replaced).
+        let (orch, dir) = makeOrchestrator()
+        defer { orch.stop(); try? FileManager.default.removeItem(atPath: dir) }
+        orch.watchdogGraceSeconds = 0.05
+        try orch.start(rootTask: "")
+        let child = spawnChild(orch)
+        let fb = try XCTUnwrap(orch.registry.backend(child) as? FakeBackend)
+        orch.recordAgentPrompt(child, payload: ["transcript_path": dir + "/child.jsonl"])
+        orch.receive(.turnStarted(child))
+        orch.receive(.rollup(from: child, summary: "done"))
+        orch.receive(.turnEnded(child, gen: nil))   // reported this turn → no nudge (existing guard)
+
+        orch.receive(.turnStarted(child))           // a new turn, but nobody delivered anything
+        orch.receive(.turnEnded(child, gen: nil))   // silent — yet there is no outstanding delivery
+
+        try await Task.sleep(nanoseconds: 150_000_000)
+        XCTAssertTrue(orchEvents(dir).filter { $0["event"] as? String == "report_watchdog" }.isEmpty,
+                      "no new manager delivery since the report — this silence is legitimate")
+        XCTAssertFalse(fb.sent.contains(Orchestrator.reportWatchdogText))
+
+        // A genuine new delivery (a routed send) re-arms it.
+        orch.recordAgentPrompt(child, payload: ["transcript_path": dir + "/child.jsonl",
+                                                "prompt": "MESSAGE FROM root: keep going"])
+        orch.receive(.turnStarted(child))
+        orch.receive(.turnEnded(child, gen: nil))   // silent again → now this IS a dummy report
+
+        try await waitUntil("a new delivery re-arms the watchdog") {
+            fb.sent.contains(Orchestrator.reportWatchdogText)
+        }
+        XCTAssertEqual(orchEvents(dir).filter { $0["event"] as? String == "report_watchdog" }.count, 1)
+    }
+
+    func testRecordAgentPromptDoesNotArmForOwnReminderOrTaskNotification() async throws {
+        // The watchdog's own reminder and a `<task-notification>` are system-originated, not a
+        // genuine manager ask — arming on them would recreate the ping-pong the lifetime set
+        // caused.
+        let (orch, dir) = makeOrchestrator()
+        defer { orch.stop(); try? FileManager.default.removeItem(atPath: dir) }
+        orch.watchdogGraceSeconds = 0.05
+        try orch.start(rootTask: "")
+        let child = spawnChild(orch)
+        let fb = try XCTUnwrap(orch.registry.backend(child) as? FakeBackend)
+
+        orch.recordAgentPrompt(child, payload: ["transcript_path": dir + "/child.jsonl",
+                                                "prompt": Orchestrator.reportWatchdogText])
+        orch.receive(.turnStarted(child))
+        orch.receive(.turnEnded(child, gen: nil))
+        try await Task.sleep(nanoseconds: 150_000_000)
+        XCTAssertTrue(orchEvents(dir).filter { $0["event"] as? String == "report_watchdog" }.isEmpty,
+                      "the watchdog's own reminder must not re-arm itself")
+
+        orch.recordAgentPrompt(child, payload: ["transcript_path": dir + "/child.jsonl",
+            "prompt": "<task-notification>agent finished elsewhere</task-notification>"])
+        orch.receive(.turnStarted(child))
+        orch.receive(.turnEnded(child, gen: nil))
+        try await Task.sleep(nanoseconds: 150_000_000)
+        XCTAssertTrue(orchEvents(dir).filter { $0["event"] as? String == "report_watchdog" }.isEmpty,
+                      "a system task-notification is not a manager delivery")
+        XCTAssertFalse(fb.sent.contains(Orchestrator.reportWatchdogText))
+    }
+
+    func testRouteDeliveredMessageRearmsWatchdogKindAgnostic() async throws {
+        // R1: codex/opencode's capture sites only insert watchdogDelivered on a sid/pointer
+        // change (in practice once per lifecycle), so recordAgentPrompt's prompt-text
+        // introspection (claude-hook-only) can't re-arm them after a `.rollup` cleared it. The
+        // `.route` effect handler's delivered-message branch is the kind-agnostic re-arm path:
+        // any harness, once a real manager message actually reaches the PTY.
+        let (orch, dir) = makeOrchestrator()
+        defer { orch.stop(); try? FileManager.default.removeItem(atPath: dir) }
+        orch.watchdogGraceSeconds = 0.05
+        try orch.start(rootTask: "")
+        let child = spawnChild(orch)
+        let fb = try XCTUnwrap(orch.registry.backend(child) as? FakeBackend)
+        for _ in 0..<50 where !fb.started { await Task.yield() }
+
+        orch.recordAgentPrompt(child, payload: ["transcript_path": dir + "/child.jsonl"])
+        orch.receive(.turnStarted(child))
+        orch.receive(.rollup(from: child, summary: "done"))   // clears watchdogDelivered
+        orch.receive(.turnEnded(child, gen: nil))             // reported this turn → no nudge
+
+        // A rollup-shaped or SYSTEM-shaped route delivered to the child must NOT arm it —
+        // only a genuine manager message counts.
+        orch.store.send(.message(from: NodeID("root"), to: child,
+                                 text: "SYSTEM: your message was voided", replyID: nil))
+        try await waitUntil("the SYSTEM receipt is delivered") {
+            fb.sent.contains("SYSTEM: your message was voided")
+        }
+        orch.store.send(.message(from: NodeID("root"), to: child,
+                                 text: "CHILD_ROLLUP:not a real rollup", replyID: nil))
+        try await waitUntil("the rollup-shaped text is delivered") {
+            fb.sent.contains("CHILD_ROLLUP:not a real rollup")
+        }
+        orch.receive(.turnStarted(child))
+        orch.receive(.turnEnded(child, gen: nil))    // silent — but nothing armed it
+        try await Task.sleep(nanoseconds: 150_000_000)
+        XCTAssertTrue(orchEvents(dir).filter { $0["event"] as? String == "report_watchdog" }.isEmpty,
+                      "SYSTEM-shaped and rollup-shaped routes must not arm the watchdog")
+
+        // A genuine manager message DOES (re-)arm it. The arm lands AFTER the inject ack
+        // resolves (RealCell.performInject sends the text, settles ~150ms, sends "\r", and
+        // only then returns; the orchestrator inserts into watchdogDelivered after that) —
+        // so waiting on the PTY bytes (text or even the trailing CR) races the arm and flaked
+        // ~50% under load. Wait on the arm itself via the read-only test seam.
+        XCTAssertFalse(orch.isWatchdogArmed(child), "precondition: nothing armed before the follow-up")
+        orch.store.send(.message(from: NodeID("root"), to: child,
+                                 text: "MESSAGE FROM root: follow-up", replyID: nil))
+        try await waitUntil("the follow-up delivery armed the watchdog", timeout: 5) {
+            orch.isWatchdogArmed(child)
+        }
+        orch.receive(.turnStarted(child))
+        orch.receive(.turnEnded(child, gen: nil))    // silent finish after the follow-up
+
+        try await waitUntil("the follow-up delivery re-armed the watchdog") {
+            fb.sent.contains(Orchestrator.reportWatchdogText)
+        }
+        XCTAssertEqual(orchEvents(dir).filter { $0["event"] as? String == "report_watchdog" }.count, 1)
     }
 }

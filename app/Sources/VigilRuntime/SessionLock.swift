@@ -85,4 +85,30 @@ public enum SessionLock {
         if kill(pid, 0) == 0 { return true }
         return errno == EPERM
     }
+
+    /// Scan every session dir directly under `root` and remove `live.lock` files whose
+    /// recorded pid is PROVABLY dead. No heartbeat-age rule: `isLive` already gates the
+    /// resume question on heartbeat freshness (stale = not live), so a stale-but-alive-pid
+    /// lock never wedges anything on its own — this sweep is pure hygiene, not a correctness
+    /// requirement. An age rule would risk deleting a genuinely LIVE instance's claim (e.g. a
+    /// laptop lid closed for a couple of days with Vigil open, its heartbeat harvester timer
+    /// paused) right as a second instance starts on wake — zero gain, nonzero split-brain
+    /// window. An unparseable lock file is left alone (not our call to guess at). Returns the
+    /// removed lock file paths.
+    @discardableResult
+    public static func sweepStale(root: String, now: Date = Date(),
+                                  pidAlive: (Int32) -> Bool = SessionLock.pidAlive) -> [String] {
+        let fm = FileManager.default
+        guard let names = try? fm.contentsOfDirectory(atPath: root) else { return [] }
+        var removed: [String] = []
+        for name in names {
+            let dir = root + "/" + name
+            guard let lock = read(dir: dir) else { continue }   // missing / unparseable: leave alone
+            guard !pidAlive(lock.pid) else { continue }
+            let lockPath = path(dir: dir)
+            try? fm.removeItem(atPath: lockPath)
+            removed.append(lockPath)
+        }
+        return removed
+    }
 }

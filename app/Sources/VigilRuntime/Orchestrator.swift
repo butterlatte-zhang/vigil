@@ -89,17 +89,32 @@ public final class Orchestrator {
     /// the manager must not be told to re-run already-finished work.
     private var reportedSinceTurnStart: Set<NodeID> = []
 
-    /// Report watchdog: nodes Vigil has actually delivered a task/message to at least
-    /// once THIS lifecycle (initial task prompt or a `send`, confirmed via the same
-    /// agent_prompt signal AutoNamer relies on — a real prompt reached the agent's
-    /// context). A bare `--resume` with nobody talking to it never sets this, so a later
-    /// idle turnEnded on it is correctly not a "silent worker" — Vigil never asked it
-    /// anything. Never cleared (a lifetime fact, like `nodeKinds`).
+    /// Report watchdog: nodes Vigil has an OUTSTANDING real delivery to (initial task prompt
+    /// or a `send`, confirmed via the same agent_prompt signal AutoNamer relies on — a real
+    /// prompt reached the agent's context) that hasn't been answered by a report yet.
+    /// Per-delivery, not lifetime: cleared on `.rollup` (a report answers the delivery it was
+    /// asked for). Armed from TWO sites: `recordAgentPrompt` (claude's hook payload text, which
+    /// skips the watchdog's own reminder and a `<task-notification>` — system-originated, not a
+    /// manager ask) and the `.route` effect handler's delivered-message branch (kind-agnostic —
+    /// the only re-arm path for codex/opencode, whose capture sites arm once per sid/pointer
+    /// change, not per delivery). Without the per-delivery clearing a worker's own silent
+    /// continuation turns after it already reported would keep getting nagged forever (the
+    /// lifetime-set bug this replaced). A bare `--resume` with nobody talking to it never sets
+    /// this, so a later idle turnEnded on it is correctly not a "silent worker" — Vigil never
+    /// asked it anything.
     private var watchdogDelivered: Set<NodeID> = []
     /// A reminder was nudged into this node and no report() has arrived since —
     /// the ping-pong guard. Cleared the moment a `.rollup` lands (checkReportWatchdog's
     /// bounding invariant: never a second unanswered nudge in flight).
     private var watchdogReminderOutstanding: Set<NodeID> = []
+    /// One deferred watchdog decision per node, armed by a silent `turnEnded` and cancelled by
+    /// the next `turnStarted` (mirrors `spawnWatchdogs`). Deferred because claude's Stop hook
+    /// fires BEFORE it appends the `turn_duration` system line the background-agent exemption
+    /// reads (verified same-second on real transcripts) — firing immediately would race it.
+    private var pendingWatchdogChecks: [NodeID: DispatchWorkItem] = [:]
+    /// Grace before a deferred watchdog decision fires — long enough for claude to have
+    /// written `turn_duration` after the Stop hook. Test-injectable, like `deliveryTuning`.
+    var watchdogGraceSeconds: TimeInterval = 2.0
 
     /// Who killed whom (send-in-flight → target killed), so the delivery-failure
     /// receipt stays honest. A send whose target died is a terminal dead-end — "you may need
@@ -305,6 +320,8 @@ public final class Orchestrator {
         deliveryTracker?.stop(); deliveryTracker = nil
         for w in spawnWatchdogs.values { w.cancel() }    // no verdicts after teardown
         spawnWatchdogs.removeAll(); stalledSpawns.removeAll()
+        for w in pendingWatchdogChecks.values { w.cancel() }   // no deferred nudge after teardown
+        pendingWatchdogChecks.removeAll()
         hookListener?.stop(); mcpListener?.stop()
         let cells = registry.nodeIDs.compactMap { registry.remove($0) }
         let sd = sessionDir
@@ -388,14 +405,19 @@ public final class Orchestrator {
         store.send(cmd)
         switch cmd {
         case .turnEnded(let node, _):
+            // Baseline BEFORE checkTurnError advances apiScanOffset — the watchdog's
+            // background-agent exemption must scan exactly the transcript this turn appended.
+            let baseline = apiScanOffset[node] ?? 0
             checkTurnError(node)
             captureCodexSession(node)   // turn refresh of codex sid/pointer (newest wins)
-            checkReportWatchdog(node)   // silent-worker nudge
+            checkReportWatchdog(node, baseline: baseline)   // silent-worker nudge (deferred)
         case .turnStarted(let node):
             reportedSinceTurnStart.remove(node)   // a fresh turn resets the report flag
+            pendingWatchdogChecks.removeValue(forKey: node)?.cancel()   // a new turn moots any pending nudge decision
         case .rollup(let node, _):
             reportedSinceTurnStart.insert(node)   // this node reported up during this turn
             watchdogReminderOutstanding.remove(node)   // a report answers any outstanding nudge
+            watchdogDelivered.remove(node)   // and answers the delivery it was asked for — see recordAgentPrompt
         case .requestStruct(let req, let caller, _):
             // Attribute a kill to its caller for the whole sealed subtree (store.send
             // above already applied it, so terminal targets are visible + still in the tree).
@@ -418,8 +440,8 @@ public final class Orchestrator {
         let baseline = apiScanOffset[node] ?? 0
         let content = transcriptSince(node, baseline)
         apiScanOffset[node] = transcriptLength(node)
-        guard TranscriptScan.hasApiError(inJSONL: content) else { return }
-        orchLog("turn_errored", ["node": node.raw])
+        guard let reason = TranscriptScan.apiErrorSnippet(inJSONL: content) else { return }
+        orchLog("turn_errored", ["node": node.raw, "reason": reason])
         store.send(.turnErrored(node))
         if let parent = store.tree[node]?.parent, store.tree[parent]?.status.isTerminal == false {
             // This system message plus the sidebar's .errored yellow dot are
@@ -446,23 +468,58 @@ public final class Orchestrator {
         "this terminal stays local to this cell — your parent is still waiting. If the work " +
         "is finished or blocked, send a short summary up now via the report tool."
 
-    /// A turn just ended for `node`: if Vigil ever delivered it a task/message this
-    /// lifecycle (`watchdogDelivered`), no report arrived THIS turn
-    /// (`reportedSinceTurnStart`, the same per-turn flag), and no reminder is already
-    /// outstanding for it, nudge it once via the ordinary inject path. Bounded by
-    /// construction: `watchdogReminderOutstanding` blocks a second nudge until a
-    /// `.rollup` clears it — the reminder itself opens a new turn, and if THAT turn also
-    /// ends silently the gate is still up, so no ping-pong. Root is immune (no parent to
-    /// report to); a dead cell gets no injection (same honesty rule as every other inject
-    /// path).
-    private func checkReportWatchdog(_ node: NodeID) {
+    /// A turn just ended for `node`: if it has an outstanding delivery (`watchdogDelivered`,
+    /// per-delivery not lifetime — see its doc comment), no report arrived THIS turn
+    /// (`reportedSinceTurnStart`), and no reminder is already outstanding for it, ARM a
+    /// deferred decision — never fire synchronously. Two reasons: (1) a new turn starting
+    /// during the grace moots the whole question (handled by `.turnStarted` cancelling
+    /// `pendingWatchdogChecks`); (2) the background-agent exemption needs the transcript's
+    /// `turn_duration` line, which claude's Stop hook fires BEFORE writing (same-second race
+    /// on real transcripts) — reading it synchronously here would frequently miss it. Every
+    /// guard checked here is RE-CHECKED at fire time in `fireReportWatchdog`, since state can
+    /// change during the grace window. Bounded by construction:
+    /// `watchdogReminderOutstanding` blocks a second nudge until a `.rollup` clears it — the
+    /// reminder itself opens a new turn, and if THAT turn also ends silently the gate is
+    /// still up, so no ping-pong. Root is immune (no parent to report to).
+    private func checkReportWatchdog(_ node: NodeID, baseline: UInt64) {
         guard RuntimeTuning.current.reportWatchdog else { return }
         guard node != store.tree.rootID else { return }
         guard watchdogDelivered.contains(node) else { return }
         guard !watchdogReminderOutstanding.contains(node) else { return }
         guard !reportedSinceTurnStart.contains(node) else { return }
         guard let n = store.tree[node], !n.status.isTerminal else { return }
+        guard registry.cell(node) != nil else { return }
+        pendingWatchdogChecks[node]?.cancel()
+        let work = DispatchWorkItem { [weak self] in
+            MainActor.assumeIsolated { self?.fireReportWatchdog(node, baseline: baseline) }
+        }
+        pendingWatchdogChecks[node] = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + watchdogGraceSeconds, execute: work)
+    }
+
+    /// The deferred half of `checkReportWatchdog`: re-verify every guard (a new turn, a
+    /// report, a kill, or a cell teardown may all have happened during the grace), then apply
+    /// the background-agent exemption against the transcript appended since `baseline` — a
+    /// silent turn is not silent when claude's own `turn_duration` line says background
+    /// subagents were still pending, and nudging into that would just pollute the worker's
+    /// context with a redundant reminder it cannot act on any faster. A dead cell gets no
+    /// injection (same honesty rule as every other inject path).
+    private func fireReportWatchdog(_ node: NodeID, baseline: UInt64) {
+        guard pendingWatchdogChecks.removeValue(forKey: node) != nil else { return }   // cancelled race
+        guard RuntimeTuning.current.reportWatchdog else { return }
+        guard node != store.tree.rootID else { return }
+        guard watchdogDelivered.contains(node) else { return }
+        guard !watchdogReminderOutstanding.contains(node) else { return }
+        guard !reportedSinceTurnStart.contains(node) else { return }
+        guard let n = store.tree[node], !n.status.isTerminal, n.status != .running, n.status != .starting
+        else { return }
         guard let cell = registry.cell(node) else { return }
+        if let pending = TranscriptScan.pendingBackgroundAgents(inJSONL: transcriptSince(node, baseline)),
+           pending > 0 {
+            orchLog("report_watchdog_skipped",
+                    ["node": node.raw, "reason": "background_agents_pending", "count": pending])
+            return
+        }
         watchdogReminderOutstanding.insert(node)
         orchLog("report_watchdog", ["node": node.raw])
         Task { _ = try? await cell.inject(Self.reportWatchdogText) }
@@ -594,8 +651,14 @@ public final class Orchestrator {
                 if let c = registry.remove(id) { Task { await c.terminate() } }
             }
         case .route(let to, let text, let viaPath, let replyID):
-            orchLog("route", ["to": to.raw, "kind": Self.routeKind(text),
-                              "text": String(text.prefix(80))])
+            let kind = Self.routeKind(text)
+            // A rollup is the report itself — worth more than the 80-char forensic snippet
+            // every other route kind gets, so a dogfood run can be diagnosed without cross-
+            // referencing the transcript.
+            let cap = kind == "rollup" ? 400 : 80
+            var logFields: [String: Any] = ["to": to.raw, "kind": kind, "text": String(text.prefix(cap))]
+            if let from = viaPath.first { logFields["from"] = from.raw }   // path[0] = the sender (LCA-relayed, §6.3)
+            orchLog("route", logFields)
             let caller = viaPath.first     // path[0] = the sender (LCA-relayed, §6.3)
             if let cell = registry.cell(to) {
                 let pending = self.pending
@@ -608,6 +671,16 @@ public final class Orchestrator {
                                                           "delivered": ack.delivered, "note": note])
                         }
                         if ack.delivered {
+                            // A manager message that actually reached the PTY is a genuine
+                            // delivery — (re-)arm the report watchdog here, kind-agnostic
+                            // (unlike recordAgentPrompt's prompt-text introspection, which only
+                            // claude's hook payload carries). This is what lets a codex/opencode
+                            // worker's watchdog re-arm after a `.rollup` cleared it: those
+                            // harnesses' capture sites only insert on a sid/pointer change, so
+                            // without this a follow-up `send` after their first report would
+                            // never be nagged again. Rollups/SYSTEM receipts are excluded — only
+                            // an actual ask from a manager counts as a delivery.
+                            if kind == "message" { self?.watchdogDelivered.insert(to) }
                             // Keystrokes reaching the PTY ≠ delivery. A tracked
                             // send (MESSAGE FROM + replyID) is registered for transcript
                             // confirmation and answered HONESTLY (confirmation queued), never a
@@ -712,8 +785,30 @@ public final class Orchestrator {
     /// UserPromptSubmit fired: record the node → claude transcript join key —
     /// the one mapping the archive reconstruction had to recover by fingerprinting.
     /// Internal (not private) so unit tests can drive it without a UDS round trip.
+    ///
+    /// Also arms the report watchdog's per-delivery `watchdogDelivered` flag — but NOT
+    /// unconditionally: claude's UserPromptSubmit payload carries the submitted text under
+    /// `prompt` (GatewayTests pins the shape), and two prompt origins are system-originated,
+    /// not a genuine manager ask, so arming on them would recreate the old lifetime-set
+    /// over-nagging bug: the watchdog's OWN reminder (it would otherwise re-arm itself) and a
+    /// `<task-notification>` (an automatic system nudge, not a delivery from a parent). Every
+    /// other prompt — the initial task, a real `send`, or a payload with no `prompt` key at
+    /// all (the codex/opencode capture sites never call this; a test payload with no key) —
+    /// arms as before.
+    /// Test seam (internal, read-only): is the report watchdog currently armed for `node`,
+    /// i.e. does it have an outstanding delivery a report has not yet answered? The
+    /// route-delivery arm lands asynchronously (after the inject ack resolves), so a test
+    /// that drives a turn right after observing the PTY bytes must wait on THIS, not on the
+    /// bytes — otherwise it races the arm. Never used by product code.
+    func isWatchdogArmed(_ node: NodeID) -> Bool { watchdogDelivered.contains(node) }
+
     func recordAgentPrompt(_ node: NodeID, payload: [String: Any]) {
-        watchdogDelivered.insert(node)   // a real prompt reached this node this lifecycle
+        let promptText = payload["prompt"] as? String
+        let isOwnReminder = promptText == Self.reportWatchdogText
+        let isSystemNotification = promptText?.hasPrefix("<task-notification>") == true
+        if !isOwnReminder && !isSystemNotification {
+            watchdogDelivered.insert(node)
+        }
         var fields: [String: Any] = ["node": node.raw]
         if let t = payload["transcript_path"] as? String {
             fields["transcript"] = t
