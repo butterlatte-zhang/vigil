@@ -196,6 +196,116 @@ final class AttachSynthesisTests: XCTestCase {
         XCTAssertTrue(b.bracketedPasteMode, "bracketed-paste mode must survive synthesis")
     }
 
+    // MARK: - input-affecting DEC modes (alt-scroll history-recall trap)
+
+    /// A TUI that sits on the alternate screen with mouse tracking ON (claude 2.1.x sends
+    /// `?1049h` then `?1000h ?1002h ?1003h ?1006h`) must come back that way. If the
+    /// synthesized surface believes mouse tracking is OFF while the alt screen is ON, ghostty's
+    /// `mouse_alternate_scroll` (mode 1007, default on) turns every wheel tick into a cursor
+    /// key: the child receives Up/Down it never asked for, and claude fills the input box with
+    /// a history prompt (observed on background-born workers at first select).
+    func testMouseAndFocusModesSurviveSynthesis() {
+        let modes = "?1049h", tail = "?1000h\(esc)[?1002h\(esc)[?1003h\(esc)[?1006h\(esc)[?1004h\(esc)[?2031h"
+        let (a, b) = roundTrip("\(esc)[\(modes)\(esc)[\(tail)\(esc)[2J\(esc)[H> ")
+        for m: UInt16 in [1000, 1002, 1003, 1006, 1004, 2031] {
+            XCTAssertTrue(a.mode(m), "source should have mode \(m) set")
+            XCTAssertTrue(b.mode(m), "mode \(m) must survive synthesis")
+        }
+        XCTAssertTrue(b.snapshot().altScreen)
+        XCTAssertTrue(b.mouseTracking, "mouse tracking flag must be live on the reparsed screen")
+    }
+
+    /// Modes the child never touched must not be invented (no spurious `h`), and a mode the
+    /// child explicitly turned OFF that defaults ON (1007 alternate scroll, 7 autowrap) must
+    /// come back OFF.
+    func testUntouchedAndResetModesRoundTrip() {
+        let fresh = HostScreenParser(cols: 80, rows: 24)
+        XCTAssertTrue(fresh.mode(1007), "precondition: alternate-scroll defaults ON in the parser")
+        XCTAssertTrue(fresh.mode(7), "precondition: autowrap defaults ON in the parser")
+        let (a, b) = roundTrip("\(esc)[?1007l\(esc)[?7l\(esc)[?1h\(esc)[?66hplain")
+        for m: UInt16 in [1007, 7] {
+            XCTAssertFalse(a.mode(m)); XCTAssertFalse(b.mode(m), "mode \(m) must stay OFF after synthesis")
+        }
+        for m: UInt16 in [1, 66] {
+            XCTAssertTrue(b.mode(m), "mode \(m) must survive synthesis")
+        }
+        for m: UInt16 in [1000, 1002, 1003, 1004, 1006, 2031] {
+            XCTAssertFalse(b.mode(m), "mode \(m) was never set and must not be invented")
+        }
+        XCTAssertFalse(b.mouseTracking)
+    }
+
+    /// Pure-serializer contract: only modes that differ from the parser defaults are emitted
+    /// (an untouched mode must keep the surface's own default — 2027 is ON on a real ghostty
+    /// surface under `grapheme-width-method = unicode` but OFF in the parser, so an explicit
+    /// `?2027l` would downgrade rendering), resets (`l`) precede sets (`h`) so a later reset can
+    /// never clobber a mouse-format/tracking set, and nothing in it is a query.
+    func testSerializerEmitsOnlyChangedModesResetsBeforeSets() {
+        var snap = ScreenSnapshot(cols: 4, rows: 1, history: [], active: [SynthRow(cells: [])],
+                                  cursorX: 0, cursorY: 0, cursorVisible: true, altScreen: false,
+                                  bracketedPaste: false)
+        snap.modes = VtScreen.synthModeDefaults
+        snap.modes[1003] = true; snap.modes[1006] = true; snap.modes[1007] = false
+        let out = String(decoding: AttachScreenSynthesizer.serialize(snap), as: UTF8.self)
+        let l1007 = out.range(of: "\(esc)[?1007l"), h1003 = out.range(of: "\(esc)[?1003h")
+        XCTAssertNotNil(l1007); XCTAssertNotNil(h1003); XCTAssertNotNil(out.range(of: "\(esc)[?1006h"))
+        XCTAssertLessThan(l1007!.lowerBound, h1003!.lowerBound, "resets must precede sets")
+        for n in [2027, 12, 1005, 1, 66, 2031] {
+            XCTAssertFalse(out.contains("\(esc)[?\(n)l"), "untouched mode \(n) must not be replayed")
+            XCTAssertFalse(out.contains("\(esc)[?\(n)h"), "untouched mode \(n) must not be replayed")
+        }
+        XCTAssertFalse(out.contains("\(esc)[?7h"), "default-on mode at default must not be replayed")
+        XCTAssertFalse(out.contains("\(esc)[c"), "never a query")
+        XCTAssertFalse(out.contains("\(esc)[6n"), "never a query")
+    }
+
+    /// The defaults table the serializer diffs against must match the vendored parser's real
+    /// reset values — pins the table to the libghostty-vt build so an upgrade cannot drift it.
+    func testSynthModeDefaultsMatchParser() {
+        let fresh = HostScreenParser(cols: 80, rows: 24)
+        for m in VtScreen.synthModes {
+            XCTAssertEqual(fresh.mode(m), VtScreen.synthModeDefaults[m], "default of mode \(m)")
+        }
+        XCTAssertEqual(Set(VtScreen.synthModeDefaults.keys), Set(VtScreen.synthModes))
+    }
+
+    /// Real-machine regression: the actual claude 2.1.263 startup stream (alt screen + mouse
+    /// tracking + focus reporting + color-scheme reports) must come out of synthesis in the
+    /// same input regime, and the synthesized bytes must set the mouse family explicitly —
+    /// the exact state that keeps ghostty from converting wheel ticks into cursor keys.
+    func testRealClaude263StartupStreamKeepsInputRegime() throws {
+        let url = try XCTUnwrap(Bundle.module.url(
+            forResource: "claude-2.1.263-startup-altscreen-mouse", withExtension: "raw"))
+        let raw = try Data(contentsOf: url)
+        let a = HostScreenParser(cols: 120, rows: 40)
+        a.feed(raw)
+        XCTAssertTrue(a.snapshot().altScreen, "precondition: claude sits on the alt screen")
+        XCTAssertTrue(a.mouseTracking, "precondition: claude enabled mouse tracking")
+        for m: UInt16 in [1000, 1002, 1003, 1006, 1004, 2031] {
+            XCTAssertTrue(a.mode(m), "precondition: capture sets mode \(m)")
+        }
+        let synth = a.synthesize()
+        let text = String(decoding: synth, as: UTF8.self)
+        for m in [1000, 1002, 1003, 1006, 1004, 2031] {
+            XCTAssertTrue(text.contains("\(esc)[?\(m)h"), "synthesis must set mode \(m)")
+        }
+        XCTAssertFalse(text.contains("\(esc)[?2027l"), "untouched 2027 must not be downgraded")
+        let b = HostScreenParser(cols: 120, rows: 40)
+        b.feed(synth)
+        XCTAssertTrue(b.snapshot().altScreen)
+        XCTAssertTrue(b.mouseTracking, "reparsed surface must have mouse tracking live")
+        for m: UInt16 in [1000, 1002, 1003, 1006, 1004, 2031] { XCTAssertTrue(b.mode(m)) }
+        assertActiveEqual(a, b, "real claude frame")
+    }
+
+    /// Kitty keyboard protocol flags (codex/opencode-style TUIs push `CSI > flags u`) are part
+    /// of the surface→PTY key encoding and must survive too.
+    func testKittyKeyboardFlagsSurviveSynthesis() {
+        let (a, b) = roundTrip("\(esc)[>1uprompt")
+        XCTAssertEqual(a.kittyKeyboardFlags, 1, "precondition: parser tracks CSI > u push")
+        XCTAssertEqual(b.kittyKeyboardFlags, 1, "kitty flags must survive synthesis")
+    }
+
     // MARK: - scrollback capture (pins the max_scrollback unit)
 
     /// The parser retains scrollback. Feeding many lines into a short screen accumulates

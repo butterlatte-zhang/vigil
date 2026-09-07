@@ -67,6 +67,17 @@ struct ScreenSnapshot: Equatable {
     var cursorVisible: Bool
     var altScreen: Bool
     var bracketedPaste: Bool
+    /// Input-affecting DEC private modes (`VtScreen.synthModes`), number → set. These decide
+    /// how the SURFACE encodes host input for the PTY (cursor keys, keypad, mouse tracking +
+    /// format, focus events, alternate scroll, color-scheme reports, in-band resize). A fresh
+    /// surface starts at defaults; replaying the child's screen without them leaves the
+    /// surface in a different input regime than the child asked for — e.g. alt screen ON +
+    /// mouse tracking OFF makes ghostty turn wheel ticks into Up/Down keys (mode 1007), which
+    /// a TUI reads as history recall. Only modes that differ from `VtScreen.synthModeDefaults`
+    /// are emitted (`l` before `h`).
+    var modes: [UInt16: Bool] = [:]
+    /// Kitty keyboard protocol flags currently in effect (0 = legacy encoding).
+    var kittyKeyboardFlags: UInt8 = 0
 }
 
 // MARK: - Serializer
@@ -76,6 +87,8 @@ enum AttachScreenSynthesizer {
     /// Turn a screen snapshot into a self-contained VT byte stream that, replayed into a fresh
     /// (cleared, correctly-sized) surface, reproduces the snapshot's display. Contains only
     /// state-setting sequences — never a query — so it is inert with respect to the PTY.
+    /// Contents: SGR reset → (alt screen | clear) → rows → cursor → 25/2004 → input-regime
+    /// modes (`ScreenSnapshot.modes`) → kitty keyboard flags → SGR reset.
     static func serialize(_ s: ScreenSnapshot) -> Data {
         var out = Data()
         func w(_ str: String) { out.append(contentsOf: str.utf8) }
@@ -106,6 +119,20 @@ enum AttachScreenSynthesizer {
         w("\u{1b}[\(s.cursorY + 1);\(s.cursorX + 1)H")
         if !s.cursorVisible { w("\u{1b}[?25l") }
         if s.bracketedPaste { w("\u{1b}[?2004h") }
+        // Input regime: only modes that differ from the parser's reset defaults (an untouched
+        // mode must keep the SURFACE's own configured default — see `VtScreen.synthModeDefaults`).
+        // Resets first, then sets: ghostty folds the mouse tracking (9/1000/1002/1003) and mouse
+        // format (1005/1006/1015/1016) families into ONE flag each, where a reset of any member
+        // drops the flag to none/x10, so a reset emitted after a set would clobber it. Ascending
+        // order within each pass mirrors the sequence TUIs send.
+        let changed = s.modes.filter { VtScreen.synthModeDefaults[$0.key] != $0.value }
+        for (n, on) in changed.sorted(by: { ($0.value ? 1 : 0, $0.key) < ($1.value ? 1 : 0, $1.key) }) {
+            w("\u{1b}[?\(n)\(on ? "h" : "l")")
+        }
+        if s.kittyKeyboardFlags != 0 {
+            // CSI = flags ; 1 u: set the current flags without pushing a stack entry.
+            w("\u{1b}[=\(s.kittyKeyboardFlags);1u")
+        }
         // Leave SGR clean: the child re-emits its own attributes before drawing, and the visible
         // grid was already laid down with explicit per-cell SGR above.
         w("\u{1b}[0m")

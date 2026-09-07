@@ -131,6 +131,11 @@ let package = Package(
                                 .copy("Resources/codex-0.144-composer-typed.raw"),
                                 .copy("Resources/opencode-composer-empty.raw"),
                                 .copy("Resources/opencode-composer-typed.raw"),
+                                // #65: REAL claude 2.1.263 startup stream (pty harness answering
+                                // DA/OSC 11, trusted cwd; plan-tier text blanked) — alt screen +
+                                // mouse tracking + focus reporting. Guards attach synthesis
+                                // against losing the input regime a background-born node needs.
+                                .copy("Resources/claude-2.1.263-startup-altscreen-mouse.raw"),
                                 // #57: REAL codex 0.144.1 rollouts (base_instructions redacted) —
                                 // a MAIN session (thread_source=user) + a task-spawned SUB-AGENT
                                 // (thread_source=subagent), same codex-home. Guards the sub-agent

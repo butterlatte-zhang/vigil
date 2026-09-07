@@ -84,6 +84,48 @@ final class VtScreen {
         return on
     }
 
+    /// Input-affecting DEC private modes captured for attach synthesis (see
+    /// `ScreenSnapshot.modes`): cursor keys (1), autowrap (7), X10/normal/button/any mouse
+    /// (9/1000/1002/1003), focus events (1004), mouse formats (1005/1006/1015/1016), alternate
+    /// scroll (1007), application keypad (66), cursor blink (12), grapheme clustering (2027),
+    /// color-scheme reports (2031), in-band resize (2048). 25 / 47 / 1047 / 1049 / 2004 are
+    /// carried by their own snapshot fields; 2026 (sync output) is transient by design.
+    static let synthModes: [UInt16] = [1, 7, 9, 12, 66, 1000, 1002, 1003, 1004, 1005, 1006,
+                                       1007, 1015, 1016, 2027, 2031, 2048]
+
+    /// The parser's built-in reset value for each `synthModes` entry (pinned against a fresh
+    /// parser by `AttachSynthesisTests.testSynthModeDefaultsMatchParser`). The synthesizer
+    /// emits only modes that DIFFER from these: a mode the child never touched stays at the
+    /// SURFACE's own default, which ghostty configures per surface (e.g. 2027 grapheme
+    /// clustering is ON under `grapheme-width-method = unicode` while the parser resets it
+    /// OFF) — replaying the parser's default explicitly would silently downgrade the surface.
+    /// Honest boundary: a child that explicitly RESETS a surface-only default (e.g. `?2027l`)
+    /// is indistinguishable from one that never touched it and is not replayed.
+    static let synthModeDefaults: [UInt16: Bool] =
+        Dictionary(uniqueKeysWithValues: synthModes.map { ($0, $0 == 7 || $0 == 1007) })
+
+    /// Truth of one DEC private (`?`) mode.
+    func mode(_ number: UInt16) -> Bool {
+        var on = false
+        _ = ghostty_terminal_mode_get(terminal, ghostty_mode_new(number, false), &on)
+        return on
+    }
+
+    /// Whether any mouse tracking family member is active (the folded flag ghostty's surface
+    /// consults before converting wheel ticks into cursor keys on the alt screen).
+    var mouseTracking: Bool {
+        var on = false
+        _ = ghostty_terminal_get(terminal, GHOSTTY_TERMINAL_DATA_MOUSE_TRACKING, &on)
+        return on
+    }
+
+    /// Kitty keyboard protocol flags currently in effect (0 = legacy).
+    var kittyKeyboardFlags: UInt8 {
+        var flags: UInt8 = 0
+        _ = ghostty_terminal_get(terminal, GHOSTTY_TERMINAL_DATA_KITTY_KEYBOARD_FLAGS, &flags)
+        return flags
+    }
+
     /// The visible grid as text — the ONE scrape source (§12.3 via the shared row builder).
     func renderScreen() -> String {
         var out = ""
@@ -107,7 +149,8 @@ final class VtScreen {
     // MARK: - Attach synthesis snapshot (worktree/attach-synthesis)
 
     /// Capture the full screen STATE — scrollback history, active grid (with per-cell style),
-    /// cursor, and the alt-screen / bracketed-paste modes — as plain data for
+    /// cursor, the alt-screen / bracketed-paste modes, the input-regime DEC modes and kitty
+    /// keyboard flags — as plain data for
     /// `AttachScreenSynthesizer`. Same serial-queue confinement as every other C-API touch: the
     /// owning `HostScreenParser` calls this inside `queue.sync`. Only the ACTIVE screen is
     /// readable through the point tags, so on the alternate screen `history` is empty (the
@@ -137,7 +180,10 @@ final class VtScreen {
         return ScreenSnapshot(cols: cols, rows: rows, history: history, active: active,
                               cursorX: Int(cursorX), cursorY: Int(cursorY),
                               cursorVisible: visible, altScreen: alt,
-                              bracketedPaste: bracketedPasteMode)
+                              bracketedPaste: bracketedPasteMode,
+                              modes: Dictionary(uniqueKeysWithValues:
+                                                    Self.synthModes.map { ($0, mode($0)) }),
+                              kittyKeyboardFlags: kittyKeyboardFlags)
     }
 
     /// One snapshot row (char + full `SynthStyle`) for the given coordinate space, mirroring

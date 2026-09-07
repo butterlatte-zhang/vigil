@@ -69,6 +69,21 @@ final class HostScreenParser: @unchecked Sendable {
         queue.sync { terminal.colorSchemeReportMode }
     }
 
+    /// Truth of one DEC private mode, read on the feed queue (attach-synthesis tests).
+    func mode(_ number: UInt16) -> Bool {
+        queue.sync { terminal.mode(number) }
+    }
+
+    /// Folded mouse-tracking flag, read on the feed queue.
+    var mouseTracking: Bool {
+        queue.sync { terminal.mouseTracking }
+    }
+
+    /// Kitty keyboard protocol flags, read on the feed queue.
+    var kittyKeyboardFlags: UInt8 {
+        queue.sync { terminal.kittyKeyboardFlags }
+    }
+
     /// Keep the shadow grid the same size as the real PTY (driven off the surface's
     /// resize, mirrored to HostPTY) so wrapping/footer detection matches what the child
     /// actually drew.
