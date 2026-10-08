@@ -16,6 +16,17 @@ public final class RealCell: CellHandle, @unchecked Sendable {
     private let injectPollInterval: TimeInterval
     private let injectMaxQueueWait: TimeInterval
     private let injectHoldNoticeDelay: TimeInterval
+    /// Closed-loop submit (see `performInject`): how long to wait for pasted text to LAND in the
+    /// input box (claude reads/resizes a pasted image asynchronously before the box fills), how
+    /// long to watch for the box to clear after a CR, and the bounded re-submit budget (codex
+    /// swallows Enters during MCP startup) with its first backoff step.
+    private let injectLandTimeout: TimeInterval
+    private let injectConfirmWindow: TimeInterval
+    private let injectRetryTimeout: TimeInterval
+    private let injectRetryInterval: TimeInterval
+    /// Receives the ack of the initial-prompt inject (which has no caller to hand it to) so its
+    /// forensic note can reach the orchestration log.
+    private let onInitialPromptAck: @Sendable (NodeID, InjectAck) -> Void
     /// The first-turn task, delivered by PTY injection after the cell is up (argv would be
     /// a ps/pkill mass-kill surface). nil = nothing to inject (resume, headless printMode).
     /// See `deliverInitialPrompt`.
@@ -65,6 +76,11 @@ public final class RealCell: CellHandle, @unchecked Sendable {
                 injectMaxQueueWait: TimeInterval = 120,
                 injectHoldNoticeDelay: TimeInterval = 2.0,
                 initialPromptReadyTimeout: TimeInterval = 30,
+                injectLandTimeout: TimeInterval = 5,
+                injectConfirmWindow: TimeInterval = 0.5,
+                injectRetryTimeout: TimeInterval = 30,
+                injectRetryInterval: TimeInterval = 1.0,
+                onInitialPromptAck: @escaping @Sendable (NodeID, InjectAck) -> Void = { _, _ in },
                 onExit: @escaping @Sendable (NodeID, Int32?) -> Void,
                 onInjectHold: @escaping @Sendable (NodeID, Int, Bool, UInt64) -> Void = { _, _, _, _ in },
                 onChildPid: @escaping @Sendable (NodeID, pid_t) -> Void = { _, _ in }) {
@@ -75,6 +91,11 @@ public final class RealCell: CellHandle, @unchecked Sendable {
         self.injectMaxQueueWait = injectMaxQueueWait
         self.injectHoldNoticeDelay = injectHoldNoticeDelay
         self.initialPromptReadyTimeout = initialPromptReadyTimeout
+        self.injectLandTimeout = injectLandTimeout
+        self.injectConfirmWindow = injectConfirmWindow
+        self.injectRetryTimeout = injectRetryTimeout
+        self.injectRetryInterval = injectRetryInterval
+        self.onInitialPromptAck = onInitialPromptAck
         self.onInjectHold = onInjectHold
         self.onChildPid = onChildPid
     }
@@ -136,7 +157,7 @@ public final class RealCell: CellHandle, @unchecked Sendable {
             if case .clear = Self.probeInputLine(backend.renderAttributed()) { break }
             try? await Task.sleep(seconds: injectPollInterval)
         }
-        _ = try? await inject(text)
+        if let ack = try? await inject(text) { onInitialPromptAck(nodeID, ack) }
     }
 
     /// Ack-bearing injection (DOCTRINE §6.3). Send the text, let the
@@ -189,6 +210,7 @@ public final class RealCell: CellHandle, @unchecked Sendable {
         guard canSend else { return InjectAck(delivered: false, note: "cell not running") }
 
         var note: String?
+        var heldFailOpen = false
         if case .userTyping = Self.probeInputLine(backend.renderAttributed()) {
             let queuedAt = Date()
             var failOpen = false
@@ -228,6 +250,7 @@ public final class RealCell: CellHandle, @unchecked Sendable {
                     onInjectHold(nodeID, fired.pending, true, fired.epoch)
                 }
             }
+            heldFailOpen = failOpen
             let waited = String(format: "%.1fs", Date().timeIntervalSince(queuedAt))
             note = failOpen
                 ? "queued \(waited): input line still busy, fail-open inject"
@@ -238,14 +261,100 @@ public final class RealCell: CellHandle, @unchecked Sendable {
         // The hold loop above ran with the window CLOSED (red line ②) — the human typed
         // straight through while we waited. Now that we commit to inject, gate keystrokes that
         // arrive during the ~200ms window and replay them after the CR (backend gate + replay;
-        // no-op on non-host backends). `defer` guarantees endInject fires even on early exit —
-        // a leaked-open window would buffer the user's input forever.
+        // no-op on non-host backends). `windowOpen` + `defer` guarantee endInject fires exactly
+        // once even on early exit — a leaked-open window would buffer the user's input forever.
+        //
+        // Closed-loop submit. A CR is only a REQUEST to submit: codex swallows Enters during its
+        // MCP startup, and claude fills the box asynchronously after a pasted image (a CR on the
+        // still-empty box is a no-op). So when the box was recognised AND empty right before the
+        // send (`.clear`), we (1) wait for the text to land (probe → .userTyping(landed)), (2) send
+        // the CR, (3) confirm the box left `landed`, and (4) if not, re-send a lone CR with backoff,
+        // bounded by `injectRetryTimeout`. Unrecognised screen (.unknown) or a fail-open inject
+        // (a human's content was in the box) keeps the old open-loop behaviour: settle + ONE CR.
+        let closedLoop: Bool = {
+            guard !heldFailOpen else { return false }
+            if case .clear = Self.probeInputLine(backend.renderAttributed()) { return true }
+            return false
+        }()
         backend.beginInject()
-        defer { backend.endInject() }
+        var windowOpen = true
+        defer { if windowOpen { backend.endInject() } }
         backend.send(text)
-        try? await Task.sleep(seconds: 0.15)   // settle before CR
+        let sentAt = Date()
+        let settle: TimeInterval = 0.15        // settle before CR
+        guard closedLoop else {
+            try? await Task.sleep(seconds: settle)
+            backend.send("\r")
+            return InjectAck(delivered: true, note: note)
+        }
+        // Wait for the text to land; a swallowed/late paste is caught here instead of a CR
+        // fired at an empty box. "Landed" = the box content stopped changing for the settle
+        // time: a busy TUI paints a paste over several frames, and snapshotting a partial frame
+        // would make the next frame read as "the box changed → submitted" and skip the re-CR.
+        // Never landing (or cell death / cancel) → old behaviour: one CR.
+        let landPoll = min(injectPollInterval, 0.05)
+        var landed: String?
+        var candidate: String?
+        var candidateSince = sentAt
+        while true {
+            if case .userTyping(let c) = Self.probeInputLine(backend.renderAttributed()) {
+                if c != candidate { candidate = c; candidateSince = Date() }
+                else if Date().timeIntervalSince(candidateSince) >= settle { landed = c; break }
+            } else {
+                candidate = nil
+            }
+            if Task.isCancelled || withLock({ exited })
+                || Date().timeIntervalSince(sentAt) >= injectLandTimeout { landed = candidate; break }
+            try? await Task.sleep(seconds: landPoll)
+        }
+        let unsettled = settle - Date().timeIntervalSince(sentAt)
+        if unsettled > 0 { try? await Task.sleep(seconds: unsettled) }
         backend.send("\r")
-        return InjectAck(delivered: true, note: note)
+        guard let landed else { return InjectAck(delivered: true, note: note) }
+        let landedProbe = InputLineProbe.userTyping(landed)
+
+        /// Poll for the box to leave `landed` within the confirm window. True = submitted (or the
+        /// box changed under us — either way our CR is no longer needed).
+        func confirmed() async -> Bool {
+            let t0 = Date()
+            while true {
+                if Self.probeInputLine(backend.renderAttributed()) != landedProbe { return true }
+                if Task.isCancelled || withLock({ exited })
+                    || Date().timeIntervalSince(t0) >= injectConfirmWindow { return false }
+                try? await Task.sleep(seconds: landPoll)
+            }
+        }
+        func joined(_ extra: String?) -> String? {
+            [note, extra].compactMap { $0 }.joined(separator: "; ").nilIfEmpty
+        }
+        if await confirmed() { return InjectAck(delivered: true, note: note) }
+
+        // Unconfirmed → close the window BEFORE waiting (the human types freely meanwhile), then
+        // bounded retries. SAFETY: a lone CR is re-sent ONLY while the probe is EXACTLY
+        // `.userTyping(landed)` — our own text, still sitting unsubmitted in the same input box. If
+        // the box cleared (submitted), changed (a human typing) or vanished (a permission dialog or
+        // another screen took over), we stop at once, so a CR can never land on anything else.
+        backend.endInject(); windowOpen = false
+        var extraCRs = 0
+        var interval = injectRetryInterval
+        let retryStart = Date()
+        while Date().timeIntervalSince(retryStart) < injectRetryTimeout {
+            try? await Task.sleep(seconds: interval)
+            interval = min(interval * 1.5, 5)
+            if Task.isCancelled || withLock({ exited }) {
+                return InjectAck(delivered: true, note: joined("submit unconfirmed after \(1 + extraCRs) CR (stopped early)"))
+            }
+            guard Self.probeInputLine(backend.renderAttributed()) == landedProbe else {
+                return InjectAck(delivered: true, note: joined("submit confirmed after \(extraCRs) extra CR"))
+            }
+            backend.beginInject()
+            backend.send("\r")
+            extraCRs += 1
+            let ok = await confirmed()
+            backend.endInject()
+            if ok { return InjectAck(delivered: true, note: joined("submit confirmed after \(extraCRs) extra CR")) }
+        }
+        return InjectAck(delivered: true, note: joined("submit unconfirmed after \(1 + extraCRs) CR"))
     }
 
     /// Probe verdict for the claude-TUI input line.
@@ -457,4 +566,8 @@ public final class RealCell: CellHandle, @unchecked Sendable {
         let live = withLock { started && !exited }
         if live { backend.terminate() }
     }
+}
+
+private extension String {
+    var nilIfEmpty: String? { isEmpty ? nil : self }
 }

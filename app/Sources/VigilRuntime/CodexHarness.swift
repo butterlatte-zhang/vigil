@@ -153,6 +153,10 @@ public struct CodexHarness: Harness {
         // Vigil-owned overlay: permission tier (top-level keys) + trust + vigil MCP (tables).
         var top = "approval_policy = \(tomlString(approval))\n"
         top += "sandbox_mode = \(tomlString(sandbox))\n"
+        // A per-node CODEX_HOME gets a version.json after first run, and codex then pops an
+        // "Update available — Update now (npm install -g …)" box on resume: any injected CR
+        // would trigger a global npm install. Pin the check off (overrides the user's value).
+        top += "check_for_update_on_startup = false\n"
         var tables = ""
         // Under a fresh per-node CODEX_HOME, codex 0.144+ pops a directory-trust box before the
         // composer ("Do you trust the contents of this directory?"), and initialPrompt queues

@@ -28,7 +28,7 @@ import Foundation
 enum CodexConfigInherit {
 
     /// Key names whose value Vigil owns — stripped from the user config wherever they appear.
-    static let ownedKeys: Set<String> = ["approval_policy", "sandbox_mode"]
+    static let ownedKeys: Set<String> = ["approval_policy", "sandbox_mode", "check_for_update_on_startup"]
 
     /// Compose the per-node config.toml: Vigil's top-level keys first (they must precede any
     /// table header or they would join it), then the filtered user config, then Vigil's tables.

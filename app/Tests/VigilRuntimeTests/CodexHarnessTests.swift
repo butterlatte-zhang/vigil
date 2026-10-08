@@ -197,6 +197,27 @@ final class CodexHarnessTests: XCTestCase {
         XCTAssertTrue(toml.contains("sandbox_mode = \"workspace-write\""))
     }
 
+    /// codex writes version.json in a per-node home and then pops an "Update available" box on
+    /// resume (any injected CR would trigger a global npm install) — Vigil pins the check off
+    /// and overrides a user config that sets it.
+    func testCodexUpdateCheckPinnedOffOverridingUserConfig() throws {
+        let cfgRoot = NSTemporaryDirectory() + "vigil_codex_upd_\(getpid())_\(UUID().uuidString)"
+        defer { try? FileManager.default.removeItem(atPath: cfgRoot) }
+        let userHome = cfgRoot + "/user"
+        try FileManager.default.createDirectory(atPath: userHome, withIntermediateDirectories: true)
+        try "check_for_update_on_startup = true\nmodel = \"m1\"\n"
+            .write(toFile: userHome + "/config.toml", atomically: true, encoding: .utf8)
+        let h = CodexHarness(codexBin: "/c/codex", hookBin: "/h", mcpBin: "/m",
+                             configRoot: cfgRoot, printMode: false, userCodexHome: userHome)
+        _ = h.launchSpec(task: "t", cwd: "/w", nodeID: NodeID("n1"), role: .leaf, isRoot: false,
+                         mcpEndpoint: nil, hookEndpoint: nil, idCred: "n1")
+        let toml = try readConfigToml(cfgRoot, "n1")
+        XCTAssertTrue(toml.contains("check_for_update_on_startup = false"))
+        XCTAssertFalse(toml.contains("check_for_update_on_startup = true"), "user value must be overridden")
+        XCTAssertEqual(toml.components(separatedBy: "check_for_update_on_startup").count - 1, 1)
+        XCTAssertTrue(toml.contains("model = \"m1\""), "other user keys still inherited")
+    }
+
     func testCodexModelFlowsThroughDashM() {
         let cfgRoot = NSTemporaryDirectory() + "vigil_codex_model_\(getpid())"
         defer { try? FileManager.default.removeItem(atPath: cfgRoot) }

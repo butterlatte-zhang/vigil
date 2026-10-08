@@ -975,6 +975,16 @@ public final class Orchestrator {
                             // (same launch-scoped convention as the inject valve above).
                             initialPromptReadyTimeout: TimeInterval(
                                 RuntimeTuning.current.initialPromptReadyTimeoutSeconds),
+                            onInitialPromptAck: { [weak self] id, ack in
+                                // The initial prompt has no send-route caller; land its
+                                // forensic note (submit retries etc.) in the same trail.
+                                if let note = ack.note {
+                                    Task { @MainActor in
+                                        self?.orchLog("inject_note", ["to": id.raw,
+                                                                      "delivered": ack.delivered, "note": note])
+                                    }
+                                }
+                            },
                             onExit: { [weak self] id, code in
                                 Task { @MainActor in self?.handleExit(id, code) }
                             },

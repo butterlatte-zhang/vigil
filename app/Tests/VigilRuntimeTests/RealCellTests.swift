@@ -35,7 +35,12 @@ final class FakeBackend: TerminalBackend, @unchecked Sendable {
                onEnd: @escaping (Int32?) -> Void) {
         started = true; self.onEnd = onEnd
     }
-    func send(_ text: String) { lock.lock(); _sent.append(text); _log.append("send:\(text)"); lock.unlock() }
+    /// Scripted reaction to each send (e.g. "the CR clears the box"). Runs outside the lock.
+    var onSend: (@Sendable (String) -> Void)?
+    func send(_ text: String) {
+        lock.lock(); _sent.append(text); _log.append("send:\(text)"); let h = onSend; lock.unlock()
+        h?(text)
+    }
     func beginInject() { lock.lock(); _log.append("begin"); lock.unlock() }
     func endInject() { lock.lock(); _log.append("end"); lock.unlock() }
     func renderScreen() -> String { screen }
@@ -94,6 +99,10 @@ final class RealCellTests: XCTestCase {
                           maxQueueWait: TimeInterval = 5,
                           holdNoticeDelay: TimeInterval = 0.05,
                           readyTimeout: TimeInterval = 5,
+                          landTimeout: TimeInterval = 0.1,
+                          confirmWindow: TimeInterval = 0.1,
+                          retryTimeout: TimeInterval = 0.5,
+                          retryInterval: TimeInterval = 0.05,
                           onInjectHold: @escaping @Sendable (NodeID, Int, Bool, UInt64) -> Void = { _, _, _, _ in },
                           onExit: @escaping @Sendable (NodeID, Int32?) -> Void) -> RealCell {
         RealCell(nodeID: NodeID("n1"),
@@ -103,6 +112,8 @@ final class RealCellTests: XCTestCase {
                  injectPollInterval: pollInterval, injectMaxQueueWait: maxQueueWait,
                  injectHoldNoticeDelay: holdNoticeDelay,
                  initialPromptReadyTimeout: readyTimeout,
+                 injectLandTimeout: landTimeout, injectConfirmWindow: confirmWindow,
+                 injectRetryTimeout: retryTimeout, injectRetryInterval: retryInterval,
                  onExit: onExit, onInjectHold: onInjectHold)
     }
 
@@ -487,6 +498,157 @@ final class RealCellTests: XCTestCase {
         XCTAssertEqual(RealCell.probeInputLine(screen), .clear)
     }
 
+
+    // MARK: - closed-loop submit (land → CR → confirm → bounded re-CR)
+
+    private func boxScreen(_ content: String) -> String {
+        """
+        some earlier output
+        ╭──────────────────────────────────────────╮
+        │ > \(content)
+        ╰──────────────────────────────────────────╯
+          ? for shortcuts
+        """
+    }
+
+    /// Script a TUI: pasted text lands `landDelay` after send; each CR clears the box iff
+    /// `swallow` CRs have already been eaten (codex startup window).
+    private func scriptTUI(_ b: FakeBackend, landDelay: TimeInterval = 0, swallow: Int = 0,
+                           crScreens: CRLog = CRLog()) {
+        let eaten = Counter()
+        b.screen = screenInputEmpty
+        b.onSend = { [unowned b] tok in
+            if tok == "\r" {
+                crScreens.add(b.screen)
+                if eaten.value < swallow { eaten.bump(); return }
+                b.screen = screenInputEmpty
+            } else {
+                if landDelay == 0 { b.screen = self.boxScreen(tok) }
+                else {
+                    Task { try? await Task.sleep(seconds: landDelay); b.screen = self.boxScreen(tok) }
+                }
+            }
+        }
+    }
+
+    func testClosedLoopConfirmedNoExtraCR() async throws {
+        let b = FakeBackend(); scriptTUI(b)
+        let cell = makeCell(b) { _, _ in }
+        await cell.start()
+        let ack = try await cell.inject("hello")
+        XCTAssertTrue(ack.delivered); XCTAssertNil(ack.note)
+        XCTAssertEqual(b.sent, ["hello", "\r"])
+    }
+
+    func testCRSwallowedOnceIsRetriedAndWindowClosedBetween() async throws {
+        let b = FakeBackend(); scriptTUI(b, swallow: 1)
+        let cell = makeCell(b) { _, _ in }
+        await cell.start()
+        let ack = try await cell.inject("hello")
+        XCTAssertTrue(ack.delivered)
+        XCTAssertEqual(b.sent, ["hello", "\r", "\r"])
+        XCTAssertTrue(ack.note?.contains("submit confirmed after 1 extra CR") ?? false, "\(ack.note ?? "nil")")
+        XCTAssertEqual(b.callLog, ["begin", "send:hello", "send:\r", "end",
+                                   "begin", "send:\r", "end"],
+                       "window closes before the retry wait; each re-CR gets its own window")
+    }
+
+    func testDelayedLandingCRComesAfterLanding() async throws {
+        let b = FakeBackend(); let crs = CRLog(); scriptTUI(b, landDelay: 0.15, crScreens: crs)
+        let cell = makeCell(b, landTimeout: 2) { _, _ in }
+        await cell.start()
+        let ack = try await cell.inject("with image")
+        XCTAssertTrue(ack.delivered)
+        XCTAssertEqual(b.sent, ["with image", "\r"], "exactly one CR")
+        XCTAssertEqual(crs.all.count, 1)
+        XCTAssertEqual(RealCell.probeInputLine(crs.all[0]), .userTyping("with image"),
+                       "the CR must be sent only after the text landed in the box")
+    }
+
+    func testPartialRenderIsNotMistakenForLanded() async throws {
+        // A busy TUI paints the paste over several frames. Snapshotting the first frame as
+        // `landed` would make the next frame look like "the box changed → submitted" and
+        // silently skip the re-CR. The CR must wait until the box content stops changing.
+        let b = FakeBackend(); let crs = CRLog()
+        b.screen = screenInputEmpty
+        b.onSend = { [unowned b] tok in
+            if tok == "\r" { crs.add(b.screen); b.screen = screenInputEmpty; return }
+            Task { [weak b] in
+                try? await Task.sleep(seconds: 0.1); b?.screen = self.boxScreen("hel")
+                try? await Task.sleep(seconds: 0.1); b?.screen = self.boxScreen("hello world")
+            }
+        }
+        let cell = makeCell(b, landTimeout: 2) { _, _ in }
+        await cell.start()
+        let ack = try await cell.inject("hello world")
+        XCTAssertTrue(ack.delivered); XCTAssertNil(ack.note)
+        XCTAssertEqual(b.sent, ["hello world", "\r"])
+        XCTAssertEqual(RealCell.probeInputLine(crs.all[0]), .userTyping("hello world"),
+                       "the CR must wait for the box content to settle, not fire on a partial frame")
+    }
+
+    func testNeverLandedKeepsOpenLoopSingleCR() async throws {
+        let b = FakeBackend(); b.screen = screenInputEmpty       // box stays empty after send
+        let cell = makeCell(b, landTimeout: 0.1, retryTimeout: 0.5) { _, _ in }
+        await cell.start()
+        let ack = try await cell.inject("x")
+        XCTAssertTrue(ack.delivered)
+        XCTAssertEqual(b.sent, ["x", "\r"], "never observed landing → old behaviour, no retry")
+    }
+
+    func testFailOpenInjectDoesNotRetry() async throws {
+        let b = FakeBackend(); b.screen = screenUserTyping       // human content that never clears
+        let cell = makeCell(b, maxQueueWait: 0.1, retryTimeout: 0.5) { _, _ in }
+        await cell.start()
+        let ack = try await cell.inject("x")
+        XCTAssertTrue(ack.delivered)
+        XCTAssertEqual(b.sent, ["x", "\r"])
+    }
+
+    func testRetryStopsWhenInputChangedUnderUs() async throws {
+        let b = FakeBackend(); scriptTUI(b, swallow: 100)
+        let cell = makeCell(b, confirmWindow: 0.1, retryTimeout: 5, retryInterval: 0.4) { _, _ in }
+        await cell.start()
+        let t = Task { try await cell.inject("hello") }
+        try await Task.sleep(nanoseconds: 350_000_000)           // CR#1 swallowed, waiting to retry
+        b.screen = boxScreen("human is typing now")
+        let ack = try await t.value
+        XCTAssertEqual(b.sent, ["hello", "\r"], "content changed → no further CR, ever")
+        XCTAssertTrue(ack.note?.contains("confirmed after 0 extra") ?? false, "\(ack.note ?? "nil")")
+    }
+
+    func testRetryBudgetExhaustedReportsUnconfirmed() async throws {
+        let b = FakeBackend(); scriptTUI(b, swallow: 1000)
+        let cell = makeCell(b, confirmWindow: 0.03, retryTimeout: 0.3, retryInterval: 0.05) { _, _ in }
+        await cell.start()
+        let ack = try await cell.inject("stuck")
+        XCTAssertTrue(ack.delivered)
+        XCTAssertTrue(ack.note?.contains("submit unconfirmed after") ?? false, "\(ack.note ?? "nil")")
+        XCTAssertGreaterThan(b.sent.filter { $0 == "\r" }.count, 2)
+        XCTAssertLessThan(b.sent.filter { $0 == "\r" }.count, 20, "bounded")
+        XCTAssertEqual(b.callLog.filter { $0 == "begin" }.count, b.callLog.filter { $0 == "end" }.count)
+    }
+
+    func testRetryLoopExitsPromptlyOnCancelAndOnCellExit() async throws {
+        let b = FakeBackend(); scriptTUI(b, swallow: 1000)
+        let cell = makeCell(b, confirmWindow: 0.03, retryTimeout: 60, retryInterval: 0.05) { _, _ in }
+        await cell.start()
+        let t = Task { try await cell.inject("stuck") }
+        try await Task.sleep(nanoseconds: 200_000_000)
+        let t0 = Date(); t.cancel()
+        _ = try? await t.value
+        XCTAssertLessThan(Date().timeIntervalSince(t0), 2, "cancel must end the retry loop")
+
+        let b2 = FakeBackend(); scriptTUI(b2, swallow: 1000)
+        let cell2 = makeCell(b2, confirmWindow: 0.03, retryTimeout: 60, retryInterval: 0.05) { _, _ in }
+        await cell2.start()
+        let t2 = Task { try await cell2.inject("stuck") }
+        try await Task.sleep(nanoseconds: 200_000_000)
+        let t1 = Date(); b2.simulateExit(1)
+        _ = try? await t2.value
+        XCTAssertLessThan(Date().timeIntervalSince(t1), 2, "cell exit must end the retry loop")
+    }
+
     func testInjectImmediateWhenInputLineEmpty() async throws {
         let b = FakeBackend(); b.screen = screenInputEmpty
         let cell = makeCell(b) { _, _ in }
@@ -757,4 +919,15 @@ final class HoldBox: @unchecked Sendable {
     func record(_ pending: Int, _ held: Bool, _ epoch: UInt64) {
         lock.lock(); _events.append((pending, held, epoch)); lock.unlock()
     }
+}
+
+final class CRLog: @unchecked Sendable {
+    private let lock = NSLock(); private var _a: [String] = []
+    func add(_ s: String) { lock.lock(); _a.append(s); lock.unlock() }
+    var all: [String] { lock.lock(); defer { lock.unlock() }; return _a }
+}
+final class Counter: @unchecked Sendable {
+    private let lock = NSLock(); private var _v = 0
+    func bump() { lock.lock(); _v += 1; lock.unlock() }
+    var value: Int { lock.lock(); defer { lock.unlock() }; return _v }
 }
