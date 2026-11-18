@@ -186,17 +186,52 @@ export function startServer(
         return
       }
       case 'historyTranscript': {
-        const text = manager.historyTranscript(String(msg.archiveId), String(msg.nodeId))
+        const detail = manager.historyTranscript(String(msg.archiveId), String(msg.nodeId))
         ws.send(
           JSON.stringify({
             type: 'historyTranscript',
             archiveId: msg.archiveId,
             nodeId: msg.nodeId,
-            text,
+            ...detail,
           }),
         )
         return
       }
+      case 'deadNodeTranscript': {
+        const detail = manager.deadNodeTranscript(String(msg.sessionId), String(msg.nodeId))
+        ws.send(
+          JSON.stringify({
+            type: 'deadNodeTranscript',
+            sessionId: msg.sessionId,
+            nodeId: msg.nodeId,
+            ...detail,
+          }),
+        )
+        return
+      }
+      case 'shellToggle':
+        manager.toggleShell(String(msg.sessionId))
+        manager.scheduleState()
+        return
+      case 'shellInput':
+        manager.shellInput(String(msg.sessionId), String(msg.data ?? ''))
+        return
+      case 'shellResize':
+        manager.shellResize(
+          String(msg.sessionId),
+          Number(msg.cols ?? 120),
+          Number(msg.rows ?? 20),
+        )
+        return
+      case 'attachShell':
+        ws.send(
+          JSON.stringify({
+            type: 'shellTerminal',
+            sessionId: String(msg.sessionId),
+            data: manager.shellReplay(String(msg.sessionId)),
+          }),
+        )
+        return
       default:
         toast(`unknown message: ${msg.type}`)
     }

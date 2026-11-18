@@ -1,4 +1,4 @@
-// Renderer-side view of the core state. Mirrors Orchestrator.publicState()/SessionManager.state().
+// Renderer-side view of the core state. Mirrors SessionManager.state().
 
 export type NodeStatus =
   | 'starting'
@@ -51,12 +51,22 @@ export interface ViewSession {
   sessionIds: Record<string, string>
   nodeKinds: Record<string, string>
   hasLiveCells: string[]
+  cwdByNode: Record<string, string>
+  projectId: string
+  projectName: string | null
+  projectCwd: string | null
+  agentKey: string
+  agentKind: string
+  model: string | null
+  nameIsCustom: boolean
+  shellRunning: boolean
 }
 
 export interface ViewProject {
   id: string
   name: string
   cwd: string | null
+  builtin: 'chats' | 'settings' | null
   sessionIds: string[]
 }
 
@@ -71,8 +81,11 @@ export interface ViewAgent {
 export interface ViewHistoryRow {
   id: string
   name: string
+  projectId: string
   projectName: string | null
+  projectCwd: string | null
   agent: string | null
+  model: string | null
   createdAt: string | null
   modifiedAt: number | null
   archived: boolean
@@ -80,12 +93,31 @@ export interface ViewHistoryRow {
   rootSessionId: string | null
 }
 
+export interface TerminalPrefsState {
+  fontFamily: string[]
+  fontSize: number | null
+  cursorStyle: string | null
+  padding: number | null
+  background: string | null
+  foreground: string | null
+  cursorColor: string | null
+}
+
+export interface Appearance {
+  theme: 'auto' | 'dark' | 'light'
+  accent: 'blue' | 'teal' | 'amber' | 'purple'
+  terminal: TerminalPrefsState
+}
+
 export interface ViewState {
+  home: string
   configDir: string
   archiveRoot: string
+  chatsDir: string
   detected: Array<{ kind: string; bin: string }>
   defaultAgent: string | null
   agents: ViewAgent[]
+  appearance: Appearance
   projects: ViewProject[]
   sessions: Record<string, ViewSession>
   history: ViewHistoryRow[]
@@ -100,4 +132,42 @@ export interface HistoryDetail {
   nodeKinds: Record<string, string>
   firstEventAt: number | null
   lastEventAt: number | null
+  meta: {
+    name: string
+    model: string | null
+    agent: string
+    createdAt: string
+    rootSessionId: string | null
+    projectCwd: string | null
+  } | null
+}
+
+export type TranscriptItemKind = 'user' | 'assistant' | 'tools' | 'notice'
+
+export interface TranscriptItem {
+  id: number
+  kind: TranscriptItemKind
+  text: string
+}
+
+export interface ModelUsage {
+  model: string
+  input: number
+  output: number
+  cacheRead: number
+  cacheWrite: number
+}
+
+export interface TranscriptStats {
+  version: string | null
+  sessionId: string | null
+  wallSeconds: number | null
+  models: ModelUsage[]
+  sessionName: string | null
+}
+
+export interface TranscriptLoad {
+  path: string | null
+  items: TranscriptItem[] | null
+  stats: TranscriptStats | null
 }

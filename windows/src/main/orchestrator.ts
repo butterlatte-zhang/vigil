@@ -113,6 +113,7 @@ export class Orchestrator {
   private trustHandled = new Set<NodeID>()
   private killedBy = new Map<NodeID, NodeID>()
   private stopped = false
+  private stopping = false
 
   constructor(cfg: OrchestratorConfig, hooks: OrchestratorHooks) {
     this.cfg = cfg
@@ -252,7 +253,17 @@ export class Orchestrator {
       for (const [id, cell] of this.cells) {
         if (this.trustHandled.has(id)) continue
         const s = cell.snapshot().toLowerCase()
-        if (s.includes('trust the files') || s.includes('do you trust')) {
+        if (
+          s.includes('quick safety check') ||
+          s.includes('is this project you created') ||
+          s.includes('yes, i trust this folder')
+        ) {
+          // claude 2.1.32x: option 1 is "No, exit" and option 2 is "Yes, I trust this
+          // folder" — move down once, then confirm. Sending "1" here would quit claude.
+          cell.writeUser('\x1b[B\r')
+          this.trustHandled.add(id)
+        } else if (s.includes('trust the files') || s.includes('do you trust')) {
+          // older wording: option 1 is Yes
           cell.writeUser('1\r')
           this.trustHandled.add(id)
         }
@@ -263,6 +274,7 @@ export class Orchestrator {
   stop(): void {
     if (this.stopped) return
     this.stopped = true
+    this.stopping = true
     for (const t of this.spawnWatchdogs.values()) clearTimeout(t)
     this.spawnWatchdogs.clear()
     for (const t of this.pendingWatchdogChecks.values()) clearTimeout(t)
@@ -318,6 +330,10 @@ export class Orchestrator {
     return renderClaudeTranscript(p)
   }
 
+  private cwdFor(node: NodeID): string {
+    return this.rootCwd ?? path.join(this.workRoot, node)
+  }
+
   publicState() {
     const nodes: Node[] = [...this.store.tree.nodes.values()].map((n) => ({ ...n, children: [...n.children] }))
     return {
@@ -325,6 +341,7 @@ export class Orchestrator {
       createdAt: this.createdAt,
       rootID: this.rootID,
       name: this.sessionName,
+      cwdByNode: Object.fromEntries(nodes.map((n) => [n.id, this.cwdFor(n.id)])),
       nodes,
       notices: this.store.notices,
       log: this.store.log.slice(-120),
@@ -598,6 +615,13 @@ export class Orchestrator {
   }
 
   private handleExit(node: NodeID, code: number | null): void {
+    if (this.stopping) {
+      // A user-close is not a node failure: drop the cell silently so the archive's
+      // replay shows the node as terminated (no exit code), not failed.
+      this.cancelSpawnWatchdog(node)
+      this.cells.delete(node)
+      return
+    }
     this.captureCodexSession(node)
     this.captureOpenCodeSession(node)
     this.orchLog('exit', code === null ? { node } : { node, code })
