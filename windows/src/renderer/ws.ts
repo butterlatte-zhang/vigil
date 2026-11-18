@@ -1,7 +1,9 @@
-// The renderer's one WebSocket, with per-terminal subscriptions.
+// The renderer's one WebSocket, with per-terminal subscriptions (agent cells + the
+// bottom shell, which uses the reserved `__shell__` node id).
+
+export const SHELL_NODE = '__shell__'
 
 type TerminalEvent = { kind: 'pty' | 'terminal' | 'ptyExit'; data: string }
-
 type Handler = (ev: TerminalEvent) => void
 
 const token = new URLSearchParams(location.search).get('token') ?? ''
@@ -13,6 +15,7 @@ let stateHandler: ((state: any) => void) | null = null
 let toastHandler: ((text: string) => void) | null = null
 let historyHandler: ((detail: any) => void) | null = null
 let historyTextHandler: ((payload: any) => void) | null = null
+let deadNodeHandler: ((payload: any) => void) | null = null
 let sessionStartedHandler: ((id: string) => void) | null = null
 const handlers = new Map<string, Set<Handler>>()
 const queue: string[] = []
@@ -51,11 +54,31 @@ function connect(): void {
         for (const h of handlers.get(key) ?? []) h({ kind: 'terminal', data: msg.data })
         break
       }
+      case 'shellTerminal': {
+        const key = `${msg.sessionId}:${SHELL_NODE}`
+        for (const h of handlers.get(key) ?? []) h({ kind: 'terminal', data: msg.data })
+        break
+      }
       case 'history':
         historyHandler?.(msg.detail)
         break
       case 'historyTranscript':
-        historyTextHandler?.({ archiveId: msg.archiveId, nodeId: msg.nodeId, text: msg.text })
+        historyTextHandler?.({
+          archiveId: msg.archiveId,
+          nodeId: msg.nodeId,
+          path: msg.path ?? null,
+          items: msg.items ?? null,
+          stats: msg.stats ?? null,
+        })
+        break
+      case 'deadNodeTranscript':
+        deadNodeHandler?.({
+          sessionId: msg.sessionId,
+          nodeId: msg.nodeId,
+          path: msg.path ?? null,
+          items: msg.items ?? null,
+          stats: msg.stats ?? null,
+        })
         break
       case 'sessionStarted':
         sessionStartedHandler?.(msg.sessionId)
@@ -96,6 +119,13 @@ export function onHistoryTranscript(fn: (payload: any) => void): () => void {
   historyTextHandler = fn
   return () => {
     if (historyTextHandler === fn) historyTextHandler = null
+  }
+}
+
+export function onDeadNodeTranscript(fn: (payload: any) => void): () => void {
+  deadNodeHandler = fn
+  return () => {
+    if (deadNodeHandler === fn) deadNodeHandler = null
   }
 }
 

@@ -1,120 +1,98 @@
-import { useEffect, useMemo, useRef, useState } from 'react'
-import { Terminal } from '@xterm/xterm'
-import { FitAddon } from '@xterm/addon-fit'
-import '@xterm/xterm/css/xterm.css'
+// Vigil for Windows — root view. Port of Views.swift AppBody + AppModel glue.
+
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import type {
+  HistoryDetail,
+  TranscriptLoad,
+  ViewHistoryRow,
+  ViewSession,
+  ViewState,
+} from '../shared/protocol'
 import {
+  onDeadNodeTranscript,
   onHistory,
   onHistoryTranscript,
   onSessionStarted,
   onState,
   onToast,
   send,
-  subscribeTerminal,
 } from './ws'
-import type {
-  HistoryDetail,
-  NodeStatus,
-  ViewNode,
-  ViewSession,
-  ViewState,
-} from '../shared/protocol'
+import { makeTokens, resolveTheme, type VGTheme } from './theme'
+import { unseenMutation } from './status'
+import { Sidebar } from './Sidebar'
+import { TopBar } from './TopBar'
+import { Launcher } from './Launcher'
+import { SessionPane } from './SessionPane'
+import { HistoryPane } from './HistoryPane'
+import { configOnboardingPrompt } from '../shared/session'
 
-const TERM_THEME = {
-  background: '#161719',
-  foreground: '#ececee',
-  cursor: '#0a84ff',
-  cursorAccent: '#161719',
-  selectionBackground: 'rgba(10,132,255,0.30)',
-  black: '#1b1c20',
-  red: '#ff453a',
-  green: '#30d158',
-  yellow: '#ff9f0a',
-  blue: '#0a84ff',
-  magenta: '#bf5af2',
-  cyan: '#2bc4b0',
-  white: '#d8d8dc',
-  brightBlack: '#5a5b61',
-  brightRed: '#ff6961',
-  brightGreen: '#4be36f',
-  brightYellow: '#ffb340',
-  brightBlue: '#409cff',
-  brightMagenta: '#d07bff',
-  brightCyan: '#5fe0cd',
-  brightWhite: '#ffffff',
+const LS = {
+  sections: 'vigil.sections',
+  tree: 'vigil.treeOpen',
+  hideFinished: 'vigil.hideFinished',
+  sidebar: 'vigil.sidebarCollapsed',
+  shellHeight: 'vigil.shellHeight',
+  drafts: 'vigil.drafts',
+  agents: 'vigil.agents',
 }
 
-function statusLabel(s: NodeStatus): string {
-  switch (s) {
-    case 'starting':
-      return 'starting'
-    case 'running':
-      return 'running'
-    case 'idle':
-      return 'idle'
-    case 'waiting':
-      return 'awaiting you'
-    case 'queued':
-      return 'message queued'
-    case 'stalled':
-      return 'spawn stalled'
-    case 'errored':
-      return 'turn errored'
-    case 'done':
-      return 'done'
-    case 'failed':
-      return 'failed'
-    case 'killed':
-      return 'killed'
+function readJson<T>(key: string, fallback: T): T {
+  try {
+    const raw = localStorage.getItem(key)
+    return raw ? (JSON.parse(raw) as T) : fallback
+  } catch {
+    return fallback
   }
 }
 
-function dotClass(s: NodeStatus): string {
-  switch (s) {
-    case 'running':
-    case 'starting':
-      return 'dot dot-run'
-    case 'waiting':
-      return 'dot dot-warn'
-    case 'queued':
-      return 'dot dot-queue'
-    case 'stalled':
-    case 'errored':
-    case 'failed':
-      return 'dot dot-bad'
-    case 'done':
-      return 'dot dot-done'
-    case 'idle':
-      return 'dot dot-idle'
-    case 'killed':
-      return 'dot dot-dead'
+function writeJson(key: string, value: unknown): void {
+  try {
+    localStorage.setItem(key, JSON.stringify(value))
+  } catch {
+    // ignore
   }
-}
-
-function nodeById(session: ViewSession, id: string | null | undefined): ViewNode | null {
-  if (!id) return null
-  return session.nodes.find((n) => n.id === id) ?? null
-}
-
-function isTerminal(s: NodeStatus): boolean {
-  return s === 'done' || s === 'failed' || s === 'killed'
 }
 
 export default function App() {
   const [state, setState] = useState<ViewState | null>(null)
+  const [currentProjectId, setCurrentProjectId] = useState<string | null>(null)
   const [activeSessionId, setActiveSessionId] = useState<string | null>(null)
   const [selectedBySession, setSelectedBySession] = useState<Record<string, string>>({})
-  const [sidebarOpen, setSidebarOpen] = useState(true)
-  const [treeOpen, setTreeOpen] = useState(true)
-  const [toast, setToast] = useState<string | null>(null)
-  const [now, setNow] = useState(Date.now())
   const [historyId, setHistoryId] = useState<string | null>(null)
   const [historyDetail, setHistoryDetail] = useState<HistoryDetail | null>(null)
-  const [historyNode, setHistoryNode] = useState<string | null>(null)
-  const [historyText, setHistoryText] = useState<string | null>(null)
+  const [historyNodeId, setHistoryNodeId] = useState<string | null>(null)
+  const [historyTranscript, setHistoryTranscript] = useState<TranscriptLoad | null>(null)
+  const [deadTranscripts, setDeadTranscripts] = useState<Record<string, TranscriptLoad>>({})
+  const [sidebarCollapsed, setSidebarCollapsed] = useState<boolean>(() => readJson(LS.sidebar, false))
+  const [sections, setSections] = useState<Record<string, boolean>>(() => readJson(LS.sections, {}))
+  const [showAll, setShowAll] = useState<Record<string, boolean>>({})
+  const [query, setQuery] = useState('')
+  const [searching, setSearching] = useState(false)
+  const [treeOpen, setTreeOpen] = useState<Record<string, boolean>>(() => readJson(LS.tree, {}))
+  const [hideFinished, setHideFinished] = useState<Record<string, boolean>>(() => readJson(LS.hideFinished, {}))
+  const [drafts, setDrafts] = useState<Record<string, string>>(() => readJson(LS.drafts, {}))
+  const [agentByProject, setAgentByProject] = useState<Record<string, string>>(() => readJson(LS.agents, {}))
+  const [unseen, setUnseen] = useState<Record<string, Set<string>>>({})
+  const [completedUnseen, setCompletedUnseen] = useState<Record<string, boolean>>({})
+  const [lastStatus, setLastStatus] = useState<Record<string, string>>({})
+  const [now, setNow] = useState(Date.now())
+  const [toast, setToast] = useState<string | null>(null)
+  const [shellHeight, setShellHeight] = useState<number>(() => readJson(LS.shellHeight, 260))
+  const [rename, setRename] = useState<{ id: string; name: string; dead: boolean } | null>(null)
+  const [pendingRevive, setPendingRevive] = useState<{ archiveId: string; nodeId: string } | null>(null)
+  const [pendingOpenId, setPendingOpenId] = useState<string | null>(null)
+  const [systemDark, setSystemDark] = useState(() => window.matchMedia('(prefers-color-scheme: dark)').matches)
+
+  // A stable ref so WS callbacks (registered once) can open a session with fresh state.
+  const stateRef = useRef<ViewState | null>(null)
+  stateRef.current = state
+  const selectedRef = useRef(selectedBySession)
+  selectedRef.current = selectedBySession
+  const activeRef = useRef(activeSessionId)
+  activeRef.current = activeSessionId
   const openSessionRef = useRef<(id: string) => void>(() => {})
 
   useEffect(() => onState(setState), [])
-  useEffect(() => onSessionStarted((id) => openSessionRef.current(id)), [])
   useEffect(
     () =>
       onToast((text) => {
@@ -127,680 +105,612 @@ export default function App() {
     () =>
       onHistory((detail) => {
         setHistoryDetail(detail)
-        setHistoryNode(detail?.rootID ?? null)
+        setHistoryNodeId(detail?.rootID ?? null)
       }),
     [],
   )
   useEffect(
     () =>
       onHistoryTranscript((payload) => {
-        setHistoryText(payload.text ?? null)
+        setHistoryTranscript({
+          path: payload.path ?? null,
+          items: payload.items ?? null,
+          stats: payload.stats ?? null,
+        })
       }),
     [],
   )
+  useEffect(
+    () =>
+      onDeadNodeTranscript((payload) => {
+        const key = `${payload.sessionId}:${payload.nodeId}`
+        setDeadTranscripts((m) => ({
+          ...m,
+          [key]: { path: payload.path ?? null, items: payload.items ?? null, stats: payload.stats ?? null },
+        }))
+      }),
+    [],
+  )
+  useEffect(
+    () =>
+      onSessionStarted((id) => {
+        const pending = pendingRevive
+        if (stateRef.current?.sessions[id]) openSessionRef.current(id)
+        else setPendingOpenId(id)
+        if (pending && pending.archiveId === id) {
+          setTimeout(() => send({ type: 'resumeNode', sessionId: id, nodeId: pending.nodeId }), 400)
+          setPendingRevive(null)
+        }
+      }),
+    [pendingRevive],
+  )
+
   useEffect(() => {
     const t = setInterval(() => setNow(Date.now()), 1000)
     return () => clearInterval(t)
   }, [])
 
-  const sessions = useMemo(() => Object.values(state?.sessions ?? {}), [state])
-  const activeSession = activeSessionId ? state?.sessions[activeSessionId] ?? null : null
-  const selectedNodeId =
-    (activeSessionId && selectedBySession[activeSessionId]) || activeSession?.rootID || null
+  // Follow the OS when appearance.json says auto.
+  useEffect(() => {
+    const mq = window.matchMedia('(prefers-color-scheme: dark)')
+    const fn = (e: MediaQueryListEvent) => setSystemDark(e.matches)
+    mq.addEventListener('change', fn)
+    return () => mq.removeEventListener('change', fn)
+  }, [])
 
-  const selectNode = (sessionId: string, nodeId: string) => {
-    setSelectedBySession((m) => ({ ...m, [sessionId]: nodeId }))
-  }
+  const theme: VGTheme = resolveThemeWith(state?.appearance, systemDark)
+  const tokens = useMemo(
+    () => makeTokens(theme, state?.appearance?.accent ?? 'blue'),
+    [theme, state?.appearance?.accent],
+  )
 
-  const openSession = (sessionId: string) => {
+  useEffect(() => {
+    const root = document.documentElement
+    root.dataset.theme = theme
+    root.dataset.accent = state?.appearance?.accent ?? 'blue'
+    const vars: Record<string, string> = {
+      '--term': tokens.term,
+      '--panel': tokens.panelSolid,
+      '--card': tokens.card,
+      '--hair': tokens.hair,
+      '--hair2': tokens.hair2,
+      '--text': tokens.text,
+      '--text2': tokens.text2,
+      '--text3': tokens.text3,
+      '--node-line': tokens.nodeLine,
+      '--spinring': tokens.spinring,
+      '--green': tokens.green,
+      '--red': tokens.red,
+      '--warn': tokens.warn,
+      '--accent': tokens.accent,
+      '--term-bg': tokens.termBG,
+      '--term-fg': tokens.termFG,
+    }
+    for (const [k, v] of Object.entries(vars)) root.style.setProperty(k, v)
+    document.body.style.background = tokens.term
+    ;(window as any).vigil?.setTheme?.(theme)
+  }, [theme, state?.appearance?.accent, tokens])
+
+  // Unseen transitions: mark completions that land off-screen; clear once watched.
+  useEffect(() => {
+    if (!state) return
+    setLastStatus((prev) => {
+      const next = { ...prev }
+      const mark: Array<[string, string]> = []
+      const clear: Array<[string, string]> = []
+      for (const s of Object.values(state.sessions)) {
+        for (const n of s.nodes) {
+          const key = `${s.id}:${n.id}`
+          const watching =
+            activeRef.current === s.id && (selectedRef.current[s.id] ?? s.rootID) === n.id && document.hasFocus()
+          const v = unseenMutation(prev[key] as any, n.status, watching)
+          if (v === 'mark') mark.push([s.id, n.id])
+          else if (v === 'clear') clear.push([s.id, n.id])
+          next[key] = n.status
+        }
+      }
+      if (mark.length || clear.length) {
+        setUnseen((u) => {
+          const copy: Record<string, Set<string>> = { ...u }
+          for (const [sid] of [...mark, ...clear]) copy[sid] = new Set(copy[sid] ?? [])
+          for (const [sid, nid] of mark) copy[sid].add(nid)
+          for (const [sid, nid] of clear) copy[sid].delete(nid)
+          return copy
+        })
+      }
+      return next
+    })
+  }, [state])
+
+  // A session coming to rest while you are elsewhere lights the blue dot.
+  useEffect(() => {
+    if (!state) return
+    for (const s of Object.values(state.sessions)) {
+      const live = s.nodes.some((n) => n.status === 'running' || n.status === 'starting')
+      const rest = s.nodes.length > 0 && !live
+      const seenLive = (lastStatus[s.id + ':__live__'] ?? '') === 'live'
+      if (rest && seenLive && activeSessionId !== s.id) {
+        setCompletedUnseen((m) => (m[s.id] ? m : { ...m, [s.id]: true }))
+      }
+      const key = s.id + ':__live__'
+      const want = live ? 'live' : 'rest'
+      if (lastStatus[key] !== want) setLastStatus((m) => ({ ...m, [key]: want }))
+    }
+  }, [state, activeSessionId, lastStatus])
+
+  useEffect(() => {
+    if (pendingOpenId && state?.sessions[pendingOpenId]) {
+      openSessionRef.current(pendingOpenId)
+      setPendingOpenId(null)
+    }
+  }, [state, pendingOpenId])
+
+  const sessions = state ? Object.values(state.sessions) : []
+  const activeSession: ViewSession | null = activeSessionId ? state?.sessions[activeSessionId] ?? null : null
+  const selectedNodeId = activeSession ? selectedBySession[activeSession.id] ?? activeSession.rootID : null
+  const historyRow: ViewHistoryRow | null = historyId
+    ? state?.history.find((h) => h.id === historyId) ?? null
+    : null
+
+  const sessionOrder = useMemo(() => {
+    if (!state) return []
+    const live = new Map<string, number>()
+    for (const s of Object.values(state.sessions)) live.set(s.id, s.createdAt)
+    const dead = new Map<string, number>()
+    for (const h of state.history) dead.set(h.id, h.createdAt ? Date.parse(h.createdAt) : h.modifiedAt ?? 0)
+    const rows: Array<{ id: string; at: number; live: boolean }> = []
+    for (const p of state.projects) {
+      for (const id of p.sessionIds) rows.push({ id, at: live.get(id) ?? 0, live: true })
+      for (const h of state.history.filter((x) => x.projectId === p.id)) {
+        rows.push({ id: h.id, at: dead.get(h.id) ?? 0, live: false })
+      }
+    }
+    return rows.sort((a, b) => b.at - a.at)
+  }, [state])
+
+  const openSession = useCallback((id: string) => {
+    const s = stateRef.current?.sessions[id]
+    if (!s) return
     setHistoryId(null)
-    setActiveSessionId(sessionId)
-    const s = state?.sessions[sessionId]
-    if (s) selectNode(sessionId, s.rootID)
-  }
+    setHistoryDetail(null)
+    setActiveSessionId(id)
+    setCurrentProjectId(s.projectId)
+    setCompletedUnseen((m) => (m[id] ? { ...m, [id]: false } : m))
+    setUnseen((u) => (u[id] ? { ...u, [id]: new Set() } : u))
+  }, [])
   openSessionRef.current = openSession
 
-  const openHistory = (id: string) => {
+  const openLauncher = useCallback((projectId: string) => {
+    setCurrentProjectId(projectId)
+    setActiveSessionId(null)
+    setHistoryId(null)
+    setHistoryDetail(null)
+    setSearching(false)
+    setQuery('')
+    // First visit to Settings: the macOS app prefills the onboarding prompt once.
+    if (projectId === 'settings') {
+      const st = stateRef.current
+      const usedBefore =
+        st &&
+        (Object.values(st.sessions).some((s) => s.projectId === 'settings') ||
+          st.history.some((h) => h.projectId === 'settings'))
+      if (!usedBefore) {
+        setDrafts((m) => {
+          if (m.settings !== undefined) return m
+          const next = { ...m, settings: configOnboardingPrompt }
+          writeJson(LS.drafts, next)
+          return next
+        })
+      }
+    }
+  }, [])
+
+  const openHistory = useCallback((id: string) => {
+    setActiveSessionId(null)
     setHistoryId(id)
     setHistoryDetail(null)
-    setHistoryText(null)
+    setHistoryTranscript(null)
+    setHistoryNodeId(null)
     send({ type: 'history', archiveId: id })
-  }
+  }, [])
 
-  const selectHistoryNode = (id: string) => {
-    setHistoryNode(id)
-    if (historyId) send({ type: 'historyTranscript', archiveId: historyId, nodeId: id })
-  }
+  // Fetch the selected history node's transcript.
+  useEffect(() => {
+    if (!historyId || !historyNodeId) return
+    setHistoryTranscript(null)
+    send({ type: 'historyTranscript', archiveId: historyId, nodeId: historyNodeId })
+  }, [historyId, historyNodeId])
 
-  // Keyboard: every global shortcut uses Ctrl+Shift so plain keys, Escape, Enter and
-  // Ctrl-series still reach the agent's TUI untouched.
+  // Fetch the selected dead node's transcript (live session afterlife).
+  useEffect(() => {
+    if (!activeSession || !selectedNodeId) return
+    const node = activeSession.nodes.find((n) => n.id === selectedNodeId)
+    if (!node) return
+    const terminal = node.status === 'done' || node.status === 'failed' || node.status === 'killed'
+    if (!terminal) return
+    const key = `${activeSession.id}:${node.id}`
+    if (deadTranscripts[key]) return
+    send({ type: 'deadNodeTranscript', sessionId: activeSession.id, nodeId: node.id })
+  }, [activeSession, selectedNodeId, deadTranscripts])
+
+  const toggleSection = (key: string) =>
+    setSections((s) => {
+      const next = { ...s, [key]: s[key] === false }
+      writeJson(LS.sections, next)
+      return next
+    })
+  const toggleShowAll = (key: string) => setShowAll((m) => ({ ...m, [key]: !m[key] }))
+  const toggleTreeFor = (key: string) =>
+    setTreeOpen((m) => {
+      const next = { ...m, [key]: !(m[key] ?? true) }
+      writeJson(LS.tree, next)
+      return next
+    })
+  const toggleHideFinished = (key: string) =>
+    setHideFinished((m) => {
+      const next = { ...m, [key]: !m[key] }
+      writeJson(LS.hideFinished, next)
+      return next
+    })
+  const toggleSidebar = () =>
+    setSidebarCollapsed((v) => {
+      writeJson(LS.sidebar, !v)
+      return !v
+    })
+
+  const addProject = useCallback(async () => {
+    const api = (window as any).vigil
+    let cwd: string | null = null
+    if (api?.pickFolder) cwd = await api.pickFolder()
+    else cwd = window.prompt('Project folder (absolute path)')
+    if (cwd) send({ type: 'addProject', cwd })
+  }, [])
+
+  const closeActive = useCallback(() => {
+    const id = activeRef.current
+    if (!id) return
+    send({ type: 'closeSession', sessionId: id })
+    setActiveSessionId(null)
+  }, [])
+
+  const renameTarget = rename ?? null
+
+  // Keyboard shortcuts. The macOS app's global shortcuts are ⌘-modified so they never
+  // steal a TUI key; the Windows analog is Ctrl+Shift (plus Ctrl+1–9 for session jumps and
+  // Ctrl+, for settings). Plain keys, Escape, Enter and the ordinary Ctrl-series pass through.
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
-      if (!e.ctrlKey || !e.shiftKey) return
+      if (!e.ctrlKey) return
+      const step = (dir: number) => {
+        if (!activeSession) return
+        const list = flattenVisible(activeSession, hideFinished[activeSession.id] === true)
+        if (list.length === 0) return
+        const cur = list.findIndex((n) => n.id === selectedNodeId)
+        const next = list[(cur + dir + list.length) % list.length]
+        if (next) setSelectedBySession((m) => ({ ...m, [activeSession.id]: next.id }))
+      }
+
+      // Ctrl+, — open the Settings workspace (macOS ⌘,).
+      if (!e.shiftKey && !e.altKey && e.code === 'Comma') {
+        e.preventDefault()
+        openLauncher('settings')
+        return
+      }
+      // Ctrl+1–9 — jump to the Nth visible session row (macOS ⌘1–9).
+      if (!e.shiftKey && !e.altKey && /^Digit[1-9]$/.test(e.code)) {
+        e.preventDefault()
+        const row = sessionOrder[Number(e.code.slice(5)) - 1]
+        if (row) (row.live ? openSession : openHistory)(row.id)
+        return
+      }
+      // Ctrl+Alt+[ / ] — previous / next session (macOS ⌃⌘[ / ]).
+      if (e.altKey && !e.shiftKey && (e.code === 'BracketLeft' || e.code === 'BracketRight')) {
+        e.preventDefault()
+        const list = sessionOrder
+        if (list.length === 0) return
+        const i = activeRef.current ? list.findIndex((r) => r.id === activeRef.current) : -1
+        const dir = e.code === 'BracketRight' ? 1 : -1
+        const next = list[(i + dir + list.length) % list.length]
+        if (next) (next.live ? openSession : openHistory)(next.id)
+        return
+      }
+      if (!e.shiftKey || e.altKey) return
       const key = e.key.toLowerCase()
       if (key === 't') {
         e.preventDefault()
-        setHistoryId(null)
-        setActiveSessionId(null)
+        openLauncher(currentProjectId ?? 'chats')
+      } else if (key === 'o') {
+        e.preventDefault()
+        void addProject()
       } else if (key === 'w') {
         e.preventDefault()
-        if (activeSessionId) {
-          send({ type: 'closeSession', sessionId: activeSessionId })
-          setActiveSessionId(null)
-        }
+        closeActive()
+      } else if (key === 'r') {
+        e.preventDefault()
+        const id = activeRef.current ?? historyId
+        if (!id) return
+        const s = stateRef.current?.sessions[id]
+        const h = stateRef.current?.history.find((x) => x.id === id)
+        setRename({ id, name: s?.name ?? h?.name ?? '', dead: !s })
       } else if (key === 'b') {
         e.preventDefault()
-        setSidebarOpen((v) => !v)
+        toggleSidebar()
       } else if (key === 'j') {
         e.preventDefault()
-        setTreeOpen((v) => !v)
+        if (activeSession) send({ type: 'shellToggle', sessionId: activeSession.id })
       } else if (key === 'u') {
         e.preventDefault()
-        const notice = state
-          ? Object.values(state.sessions)
-              .flatMap((s) => s.notices.map((n) => ({ session: s.id, node: n.nodeID, seq: n.seq })))
-              .sort((a, b) => b.seq - a.seq)[0]
-          : null
-        if (notice) {
-          setHistoryId(null)
-          openSession(notice.session)
-          selectNode(notice.session, notice.node)
+        const all = Object.values(stateRef.current?.sessions ?? {})
+          .flatMap((s) => s.notices.map((n) => ({ sid: s.id, nid: n.nodeID, at: n.arrivedAt })))
+          .sort((a, b) => b.at - a.at)
+        if (all[0]) {
+          openSessionRef.current(all[0].sid)
+          setSelectedBySession((m) => ({ ...m, [all[0].sid]: all[0].nid }))
         }
-      } else if (e.code === 'BracketLeft' || e.code === 'BracketRight') {
+      } else if (e.code === 'BracketLeft') {
         e.preventDefault()
-        const ordered = state?.projects.flatMap((p) => p.sessionIds) ?? []
-        if (ordered.length === 0) return
-        const i = activeSessionId ? ordered.indexOf(activeSessionId) : -1
-        const step = e.code === 'BracketRight' ? 1 : -1
-        const next = ordered[(i + step + ordered.length) % ordered.length]
-        if (next) openSession(next)
+        step(-1)
+      } else if (e.code === 'BracketRight') {
+        e.preventDefault()
+        step(1)
       }
     }
     window.addEventListener('keydown', handler)
     return () => window.removeEventListener('keydown', handler)
-  }, [activeSessionId, state])
+  }, [
+    activeSession,
+    selectedNodeId,
+    hideFinished,
+    historyId,
+    currentProjectId,
+    sessionOrder,
+    openLauncher,
+    addProject,
+    closeActive,
+    openSession,
+    openHistory,
+  ])
+
+  if (!state) {
+    return <div className="boot">connecting…</div>
+  }
+
+  const currentProject =
+    state.projects.find((p) => p.id === currentProjectId) ?? state.projects.find((p) => p.id === 'chats') ?? state.projects[0]
+  const agentKey = agentByProject[currentProject?.id ?? 'chats'] ?? state.defaultAgent ?? state.agents[0]?.key ?? 'claude'
+  const treeKey = activeSession?.id ?? (historyId ? 'history' : null)
+  const treeVisible = treeKey ? treeOpen[treeKey] ?? true : false
+  const showTreeToggle = activeSession !== null || (historyId !== null && (historyDetail?.nodes.length ?? 0) > 1)
+  const deadKey = activeSession && selectedNodeId ? `${activeSession.id}:${selectedNodeId}` : null
 
   return (
     <div className="app">
-      <header className="titlebar">
-        <div className="brand">
-          <span className="brand-mark">◆</span> Vigil
-        </div>
-        <div className="crumb">
-          {activeSession ? activeSession.name || 'session' : historyId ? 'history' : 'launcher'}
-        </div>
-        <div className="titlebar-right">
-          <span className="hint">Ctrl+Shift+T new · W close · B sidebar · J tree · U alert</span>
-        </div>
-      </header>
+      {!sidebarCollapsed && (
+        <Sidebar
+          state={state}
+          currentProjectId={currentProjectId}
+          activeSessionId={activeSessionId}
+          historyId={historyId}
+          sections={sections}
+          showAll={showAll}
+          query={query}
+          searching={searching}
+          unseen={unseen}
+          completedUnseen={completedUnseen}
+          now={now}
+          onToggleSection={toggleSection}
+          onToggleShowAll={toggleShowAll}
+          onStartSearch={() => setSearching(true)}
+          onQuery={setQuery}
+          onStopSearch={() => {
+            setSearching(false)
+            setQuery('')
+          }}
+          onNewChat={() => openLauncher(currentProjectId ?? 'chats')}
+          onOpenLauncher={openLauncher}
+          onSelectSession={openSession}
+          onOpenHistory={openHistory}
+          onArchive={(id, flag) => send({ type: 'archiveSession', sessionId: id, archived: flag })}
+          onAddProject={() => void addProject()}
+          onCollapse={toggleSidebar}
+        />
+      )}
 
-      <div className="body">
-        {sidebarOpen && (
-          <Sidebar
-            state={state}
-            activeSessionId={activeSessionId}
-            historyId={historyId}
-            onNew={() => {
-              setHistoryId(null)
-              setActiveSessionId(null)
-            }}
-            onOpenSession={openSession}
-            onOpenHistory={openHistory}
-            onCloseSession={(id) => {
-              send({ type: 'closeSession', sessionId: id })
-              if (activeSessionId === id) setActiveSessionId(null)
-            }}
-          />
-        )}
+      <div className="main">
+        <TopBar
+          title={
+            activeSession?.name ??
+            historyRow?.name ??
+            currentProject?.name ??
+            'Vigil'
+          }
+          newTask={!activeSession && !historyId && currentProject !== undefined}
+          sidebarCollapsed={sidebarCollapsed}
+          onExpandSidebar={toggleSidebar}
+          showShell={activeSession !== null}
+          shellOpen={activeSession?.shellRunning === true}
+          onToggleShell={() => activeSession && send({ type: 'shellToggle', sessionId: activeSession.id })}
+          showTree={showTreeToggle}
+          treeOpen={treeVisible}
+          onToggleTree={() => treeKey && toggleTreeFor(treeKey)}
+        />
 
-        <main className="main">
-          {historyId ? (
-            <HistoryView
-              detail={historyDetail}
-              selectedNode={historyNode}
-              transcript={historyText}
-              onSelectNode={selectHistoryNode}
-              onResume={() => {
-                send({ type: 'resumeSession', archiveId: historyId })
-                setTimeout(() => {
-                  setHistoryId(null)
-                }, 300)
-              }}
-              onArchive={() => send({ type: 'archiveSession', sessionId: historyId, archived: true })}
-            />
-          ) : activeSession ? (
-            <SessionView
+        <div className="content">
+          {activeSession ? (
+            <SessionPane
+              state={state}
               session={activeSession}
-              selectedNodeId={selectedNodeId}
-              selectNode={(id) => selectNode(activeSession.id, id)}
-              treeOpen={treeOpen}
+              selectedNodeId={selectedNodeId ?? activeSession.rootID}
+              tokens={tokens}
+              appearance={state.appearance}
               now={now}
-              onResumeNode={(id) => send({ type: 'resumeNode', sessionId: activeSession.id, nodeId: id })}
-              onRename={(name) => send({ type: 'renameSession', sessionId: activeSession.id, name })}
-              onClose={() => {
-                send({ type: 'closeSession', sessionId: activeSession.id })
-                setActiveSessionId(null)
+              unseen={unseen[activeSession.id] ?? new Set()}
+              hideFinished={hideFinished[activeSession.id] === true}
+              onToggleFinished={() => toggleHideFinished(activeSession.id)}
+              treeOpen={treeOpen[activeSession.id] ?? true}
+              onSelectNode={(id) => {
+                setSelectedBySession((m) => ({ ...m, [activeSession.id]: id }))
+                setUnseen((u) => {
+                  const set = new Set(u[activeSession.id] ?? [])
+                  set.delete(id)
+                  return { ...u, [activeSession.id]: set }
+                })
+              }}
+              deadTranscript={deadKey ? deadTranscripts[deadKey] ?? null : null}
+              onResumeNode={(id) => {
+                setDeadTranscripts((m) => {
+                  const next = { ...m }
+                  delete next[`${activeSession.id}:${id}`]
+                  return next
+                })
+                send({ type: 'resumeNode', sessionId: activeSession.id, nodeId: id })
+              }}
+              onNoticeOpen={(sid, nid) => {
+                openSession(sid)
+                setSelectedBySession((m) => ({ ...m, [sid]: nid }))
+              }}
+              shellVisible={activeSession.shellRunning}
+              onToggleShell={() => send({ type: 'shellToggle', sessionId: activeSession.id })}
+              onCloseShell={() => send({ type: 'shellToggle', sessionId: activeSession.id })}
+              shellHeight={shellHeight}
+              onShellHeight={(h) => {
+                setShellHeight(h)
+                writeJson(LS.shellHeight, h)
+              }}
+            />
+          ) : historyId ? (
+            <HistoryPane
+              state={state}
+              detail={historyDetail}
+              selectedNodeId={historyNodeId}
+              transcript={historyTranscript}
+              tokens={tokens}
+              now={now}
+              treeOpen={treeOpen['history'] ?? true}
+              onSelectNode={setHistoryNodeId}
+              onResume={() => {
+                const node =
+                  historyDetail?.nodes.find((n) => n.id === historyNodeId) ?? null
+                if (node && node.id !== historyDetail?.rootID) {
+                  setPendingRevive({ archiveId: historyId, nodeId: node.id })
+                }
+                send({ type: 'resumeSession', archiveId: historyId })
               }}
             />
           ) : (
-            <Launcher state={state} />
+            currentProject && (
+              <Launcher
+                state={state}
+                project={currentProject}
+                agentKey={agentKey}
+                onAgent={(key) =>
+                  setAgentByProject((m) => {
+                    const next = { ...m, [currentProject.id]: key }
+                    writeJson(LS.agents, next)
+                    return next
+                  })
+                }
+                draft={drafts[currentProject.id] ?? ''}
+                onDraft={(text) =>
+                  setDrafts((m) => {
+                    const next = { ...m, [currentProject.id]: text }
+                    writeJson(LS.drafts, next)
+                    return next
+                  })
+                }
+                onSubmit={(task) => {
+                  send({
+                    type: 'newSession',
+                    projectId: currentProject.id,
+                    agentKey,
+                    task,
+                    permissionMode: 'bypassPermissions',
+                  })
+                  setDrafts((m) => {
+                    const next = { ...m, [currentProject.id]: '' }
+                    writeJson(LS.drafts, next)
+                    return next
+                  })
+                }}
+                onSwitchProject={openLauncher}
+                onAddProject={() => void addProject()}
+              />
+            )
           )}
-        </main>
+        </div>
       </div>
 
       {toast && <div className="toast">{toast}</div>}
-      {sessions.length === 0 && !state && <div className="boot">connecting…</div>}
-    </div>
-  )
-}
-
-// MARK: - Sidebar
-
-function Sidebar(props: {
-  state: ViewState | null
-  activeSessionId: string | null
-  historyId: string | null
-  onNew: () => void
-  onOpenSession: (id: string) => void
-  onOpenHistory: (id: string) => void
-  onCloseSession: (id: string) => void
-}) {
-  const { state } = props
-  const [addOpen, setAddOpen] = useState(false)
-  const [cwd, setCwd] = useState('')
-  const liveIds = new Set(Object.keys(state?.sessions ?? {}))
-  const history = (state?.history ?? []).filter((h) => !liveIds.has(h.id) || h.archived)
-
-  return (
-    <aside className="sidebar">
-      <div className="side-actions">
-        <button className="btn primary" onClick={props.onNew}>
-          + New session
-        </button>
-        <button className="btn ghost" title="Add project" onClick={() => setAddOpen((v) => !v)}>
-          + Project
-        </button>
-      </div>
-      {addOpen && (
-        <form
-          className="add-project"
-          onSubmit={(e) => {
-            e.preventDefault()
-            if (cwd.trim()) send({ type: 'addProject', cwd: cwd.trim() })
-            setCwd('')
-            setAddOpen(false)
+      {renameTarget && (
+        <RenameDialog
+          initial={renameTarget.name}
+          onCancel={() => setRename(null)}
+          onSave={(name) => {
+            if (name.trim()) send({ type: 'renameSession', sessionId: renameTarget.id, name: name.trim() })
+            setRename(null)
           }}
-        >
-          <input
-            autoFocus
-            placeholder="C:\\path\\to\\project"
-            value={cwd}
-            onChange={(e) => setCwd(e.target.value)}
-          />
-        </form>
-      )}
-
-      <div className="side-scroll">
-        {(state?.projects ?? []).map((project) => {
-          const rows = project.sessionIds
-            .map((id) => state?.sessions[id])
-            .filter((s): s is ViewSession => Boolean(s))
-          if (rows.length === 0 && project.id !== 'chats') return null
-          return (
-            <section key={project.id} className="project">
-              <div className="project-head">
-                <span className="project-name">{project.name}</span>
-                {project.cwd && <span className="project-cwd">{project.cwd}</span>}
-              </div>
-              {rows.map((s) => {
-                const root = nodeById(s, s.rootID)
-                const status = root?.status ?? 'idle'
-                const attention = s.notices.length
-                return (
-                  <button
-                    key={s.id}
-                    className={`session-row ${props.activeSessionId === s.id ? 'active' : ''}`}
-                    onClick={() => props.onOpenSession(s.id)}
-                  >
-                    <span className={dotClass(status)} />
-                    <span className="session-name">{s.name || 'session'}</span>
-                    {attention > 0 && <span className="badge">{attention}</span>}
-                    <span
-                      className="row-close"
-                      title="Close session"
-                      onClick={(e) => {
-                        e.stopPropagation()
-                        props.onCloseSession(s.id)
-                      }}
-                    >
-                      ×
-                    </span>
-                  </button>
-                )
-              })}
-              {rows.length === 0 && <div className="empty-row">No sessions yet</div>}
-            </section>
-          )
-        })}
-
-        <section className="history-block">
-          <div className="project-head">
-            <span className="project-name">History</span>
-          </div>
-          {history.length === 0 && <div className="empty-row">Finished sessions appear here</div>}
-          {history.map((h) => (
-            <button
-              key={h.id}
-              className={`session-row ${props.historyId === h.id ? 'active' : ''}`}
-              onClick={() => props.onOpenHistory(h.id)}
-            >
-              <span className="dot dot-dead" />
-              <span className="session-name">{h.name}</span>
-              {h.archived && <span className="tag">archived</span>}
-            </button>
-          ))}
-        </section>
-      </div>
-
-      <div className="side-foot">
-        <div className="agents-line">
-          {(state?.agents ?? []).map((a) => (
-            <span key={a.key} className={a.detected ? 'agent-on' : 'agent-off'} title={a.bin}>
-              {a.kind}
-            </span>
-          ))}
-        </div>
-        <div className="cfg-line" title={state?.configDir}>
-          {state?.configDir}
-        </div>
-      </div>
-    </aside>
-  )
-}
-
-// MARK: - Launcher
-
-function Launcher({ state }: { state: ViewState | null }) {
-  const [projectId, setProjectId] = useState('chats')
-  const [agentKey, setAgentKey] = useState<string>('')
-  const [permissionMode, setPermissionMode] = useState('bypassPermissions')
-  const [model, setModel] = useState('')
-  const [task, setTask] = useState('')
-  const [busy, setBusy] = useState(false)
-
-  const agents = (state?.agents ?? []).filter((a) => a.usable)
-  const effectiveAgent = agentKey || state?.defaultAgent || agents[0]?.key || 'claude'
-  const anyDetected = (state?.agents ?? []).some((a) => a.detected)
-
-  return (
-    <div className="launcher">
-      <div className="launcher-card">
-        <h1>Start a session</h1>
-        <p className="sub">
-          Vigil gives one manager a live tree of workers. Hand it a task — it spawns,
-          delegates, and reports back here.
-        </p>
-
-        {state && !anyDetected && (
-          <div className="warn-banner">
-            No agent CLI found on PATH. Install Claude Code (<code>claude</code>), Codex
-            (<code>codex</code>), or OpenCode (<code>opencode</code>) first.
-          </div>
-        )}
-
-        <div className="row2">
-          <label>
-            Project
-            <select value={projectId} onChange={(e) => setProjectId(e.target.value)}>
-              {(state?.projects ?? []).map((p) => (
-                <option key={p.id} value={p.id}>
-                  {p.name}
-                  {p.cwd ? ` — ${p.cwd}` : ''}
-                </option>
-              ))}
-            </select>
-          </label>
-          <label>
-            Agent
-            <select value={effectiveAgent} onChange={(e) => setAgentKey(e.target.value)}>
-              {agents.map((a) => (
-                <option key={a.key} value={a.key} disabled={!a.detected}>
-                  {a.key} {a.detected ? '' : '(not installed)'}
-                </option>
-              ))}
-            </select>
-          </label>
-        </div>
-        <div className="row2">
-          <label>
-            Permission mode
-            <select value={permissionMode} onChange={(e) => setPermissionMode(e.target.value)}>
-              <option value="bypassPermissions">bypassPermissions (all open)</option>
-              <option value="acceptEdits">acceptEdits</option>
-              <option value="plan">plan</option>
-              <option value="default">default (ask)</option>
-            </select>
-          </label>
-          <label>
-            Model <span className="dim">(optional — Vigil never picks one)</span>
-            <input value={model} onChange={(e) => setModel(e.target.value)} placeholder="CLI default" />
-          </label>
-        </div>
-
-        <label className="task">
-          Task
-          <textarea
-            autoFocus
-            value={task}
-            onChange={(e) => setTask(e.target.value)}
-            placeholder="Describe the work. The manager will split it into a tree of workers."
-            rows={6}
-            onKeyDown={(e) => {
-              if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) start()
-            }}
-          />
-        </label>
-
-        <div className="launch-actions">
-          <span className="dim">Ctrl+Enter to start</span>
-          <button
-            className="btn primary"
-            disabled={busy || task.trim() === '' || !anyDetected}
-            onClick={start}
-          >
-            {busy ? 'Starting…' : 'Start session'}
-          </button>
-        </div>
-      </div>
-    </div>
-  )
-
-  function start() {
-    if (busy || task.trim() === '') return
-    setBusy(true)
-    send({
-      type: 'newSession',
-      projectId,
-      agentKey: effectiveAgent,
-      task,
-      model: model.trim() || null,
-      permissionMode,
-    })
-    // The state update opens the session; clear busy after a moment in case it errors.
-    setTimeout(() => setBusy(false), 2500)
-  }
-}
-
-// MARK: - Session view
-
-function SessionView(props: {
-  session: ViewSession
-  selectedNodeId: string | null
-  selectNode: (id: string) => void
-  treeOpen: boolean
-  now: number
-  onResumeNode: (id: string) => void
-  onRename: (name: string) => void
-  onClose: () => void
-}) {
-  const { session, selectedNodeId } = props
-  const node = nodeById(session, selectedNodeId) ?? nodeById(session, session.rootID)
-  const notices = session.notices.filter((n) => n.displayAfter <= props.now)
-  const live = node ? session.hasLiveCells.includes(node.id) : false
-
-  return (
-    <div className={`session-view ${props.treeOpen ? 'with-tree' : ''}`}>
-      <div className="center">
-        <div className="center-head">
-          <span className={`${dotClass(node?.status ?? 'idle')}`} />
-          <span className="center-title">{session.name || 'session'}</span>
-          <span className="node-chip" title="selected node">
-            {node?.id} · {node ? statusLabel(node.status) : '—'}
-          </span>
-          {node?.title && node.title !== session.name && (
-            <span className="node-task">{node.title}</span>
-          )}
-          <span className="spacer" />
-          {node && !live && session.sessionIds[node.id] && (
-            <button className="btn ghost" onClick={() => props.onResumeNode(node.id)}>
-              Resume node
-            </button>
-          )}
-          <button
-            className="btn ghost"
-            onClick={() => {
-              const name = window.prompt('Session name', session.name ?? '')
-              if (name && name.trim()) props.onRename(name.trim())
-            }}
-          >
-            Rename
-          </button>
-          <button className="btn ghost danger" onClick={props.onClose}>
-            Close
-          </button>
-        </div>
-        <div className="terminal-wrap">
-          {node && (
-            <TerminalView
-              key={`${session.id}:${node.id}`}
-              sessionId={session.id}
-              nodeId={node.id}
-              live={live}
-            />
-          )}
-        </div>
-      </div>
-
-      {props.treeOpen && (
-        <aside className="overlay">
-          <div className="panel tree-panel">
-            <div className="panel-head">
-              <span>Tree</span>
-              <span className="dim">{session.nodes.length} node(s)</span>
-            </div>
-            <TreeList
-              session={session}
-              selected={selectedNodeId}
-              onSelect={props.selectNode}
-            />
-          </div>
-          <NoticeStack
-            session={session}
-            notices={notices}
-            onSelect={(id) => props.selectNode(id)}
-          />
-          {node?.lastRollup && (
-            <div className="panel rollup">
-              <div className="panel-head">
-                <span>Last rollup · {node.id}</span>
-              </div>
-              <div className="rollup-body">{node.lastRollup}</div>
-            </div>
-          )}
-        </aside>
+        />
       )}
     </div>
   )
 }
 
-function TreeList(props: { session: ViewSession; selected: string | null; onSelect: (id: string) => void }) {
-  const byParent = new Map<string | null, ViewNode[]>()
-  for (const n of props.session.nodes) {
-    const key = n.parent
-    if (!byParent.has(key)) byParent.set(key, [])
-    byParent.get(key)?.push(n)
-  }
-  const rows: Array<{ node: ViewNode; depth: number }> = []
-  const walk = (parent: string | null, depth: number) => {
-    for (const n of byParent.get(parent) ?? []) {
-      rows.push({ node: n, depth })
-      walk(n.id, depth + 1)
+function flattenVisible(session: ViewSession, hideFinished: boolean) {
+  const byId = new Map(session.nodes.map((n) => [n.id, n]))
+  const out: ViewSession['nodes'] = []
+  const walk = (id: string) => {
+    const n = byId.get(id)
+    if (!n) return
+    out.push(n)
+    for (const c of n.children) {
+      const child = byId.get(c)
+      if (!child) continue
+      if (hideFinished && (child.status === 'done' || child.status === 'failed' || child.status === 'killed')) continue
+      walk(c)
     }
   }
-  walk(null, 0)
-  return (
-    <div className="tree-list">
-      {rows.map(({ node, depth }) => (
-        <button
-          key={node.id}
-          className={`tree-row ${props.selected === node.id ? 'selected' : ''}`}
-          style={{ paddingLeft: 10 + depth * 14 }}
-          onClick={() => props.onSelect(node.id)}
-          title={node.title}
-        >
-          <span className={dotClass(node.status)} />
-          <span className="tree-id">{node.id}</span>
-          <span className="tree-title">{node.title || node.role}</span>
-          <span className="tree-role">{node.role === 'manager' ? 'mgr' : ''}</span>
-        </button>
-      ))}
-    </div>
-  )
+  walk(session.rootID)
+  return out
 }
 
-function NoticeStack(props: {
-  session: ViewSession
-  notices: ViewSession['notices']
-  onSelect: (id: string) => void
+function resolveThemeWith(appearance: ViewState['appearance'] | undefined, systemDark: boolean): VGTheme {
+  if (appearance?.theme === 'dark' || appearance?.theme === 'light') return appearance.theme
+  return systemDark ? 'dark' : 'light'
+}
+
+function RenameDialog({
+  initial,
+  onCancel,
+  onSave,
+}: {
+  initial: string
+  onCancel: () => void
+  onSave: (name: string) => void
 }) {
-  if (props.notices.length === 0) {
-    return (
-      <div className="panel notices empty">
-        <div className="panel-head">
-          <span>Attention</span>
-        </div>
-        <div className="empty-note">Nothing needs you right now.</div>
-      </div>
-    )
-  }
-  return (
-    <div className="notices">
-      {props.notices.map((n) => (
-        <button key={n.id} className="notice-card" onClick={() => props.onSelect(n.nodeID)}>
-          <div className="notice-top">
-            <span className={n.kind === 'permission' ? 'dot dot-warn' : 'dot dot-queue'} />
-            <span className="notice-node">{n.nodeID}</span>
-            <span className="spacer" />
-            <span className="notice-time">{new Date(n.arrivedAt).toLocaleTimeString()}</span>
-          </div>
-          <div className="notice-text">{n.text}</div>
-          <div className="notice-hint">Open that terminal to answer it</div>
-        </button>
-      ))}
-    </div>
-  )
-}
-
-// MARK: - Terminal
-
-function TerminalView({ sessionId, nodeId, live }: { sessionId: string; nodeId: string; live: boolean }) {
-  const host = useRef<HTMLDivElement | null>(null)
-
+  const [value, setValue] = useState(initial)
+  const input = useRef<HTMLInputElement | null>(null)
   useEffect(() => {
-    const term = new Terminal({
-      theme: TERM_THEME,
-      fontFamily: 'Cascadia Mono, Consolas, ui-monospace, monospace',
-      fontSize: 13,
-      lineHeight: 1.15,
-      cursorBlink: true,
-      scrollback: 5000,
-      allowProposedApi: true,
-    })
-    const fit = new FitAddon()
-    term.loadAddon(fit)
-    if (host.current) term.open(host.current)
-    fit.fit()
-
-    let replayDone = false
-    const buffered: string[] = []
-    const flush = () => {
-      replayDone = true
-      for (const d of buffered.splice(0)) term.write(d)
-    }
-    const off = subscribeTerminal(sessionId, nodeId, (ev) => {
-      if (ev.kind === 'terminal') {
-        if (ev.data) term.write(ev.data)
-        flush()
-      } else if (ev.kind === 'pty') {
-        if (replayDone) term.write(ev.data)
-        else buffered.push(ev.data)
-      } else {
-        term.write('\r\n\x1b[2m[process exited]\x1b[0m\r\n')
-      }
-    })
-    send({ type: 'attach', sessionId, nodeId })
-    const fallback = setTimeout(flush, 700)
-    const disposable = term.onData((data) => send({ type: 'input', sessionId, nodeId, data }))
-    const resize = () => {
-      try {
-        fit.fit()
-        send({ type: 'resize', sessionId, nodeId, cols: term.cols, rows: term.rows })
-      } catch {
-        // container not measurable yet
-      }
-    }
-    const ro = new ResizeObserver(resize)
-    if (host.current) ro.observe(host.current)
-    resize()
-
-    return () => {
-      clearTimeout(fallback)
-      ro.disconnect()
-      disposable.dispose()
-      off()
-      term.dispose()
-    }
-  }, [sessionId, nodeId])
-
+    input.current?.focus()
+    input.current?.select()
+  }, [])
   return (
-    <div className="terminal-host" ref={host} data-live={live ? '1' : '0'} />
-  )
-}
-
-// MARK: - History
-
-function HistoryView(props: {
-  detail: HistoryDetail | null
-  selectedNode: string | null
-  transcript: string | null
-  onSelectNode: (id: string) => void
-  onResume: () => void
-  onArchive: () => void
-}) {
-  const detail = props.detail
-  return (
-    <div className="history-view">
-      <div className="center-head">
-        <span className="center-title">Session replay</span>
-        <span className="node-chip">{detail ? `${detail.nodes.length} node(s), read-only` : 'loading…'}</span>
-        <span className="spacer" />
-        <button className="btn ghost" onClick={props.onResume}>
-          Resume session
-        </button>
-        <button className="btn ghost" onClick={props.onArchive}>
-          Archive
-        </button>
-      </div>
-      <div className="history-body">
-        <div className="history-tree">
-          {detail?.nodes.map((n) => (
-            <button
-              key={n.id}
-              className={`tree-row ${props.selectedNode === n.id ? 'selected' : ''}`}
-              onClick={() => props.onSelectNode(n.id)}
-            >
-              <span className={dotClass(n.status)} />
-              <span className="tree-id">{n.id}</span>
-              <span className="tree-title">{n.title || n.role}</span>
-            </button>
-          ))}
+    <div className="modal-backdrop" onMouseDown={onCancel}>
+      <div className="modal" onMouseDown={(e) => e.stopPropagation()}>
+        <div className="modal-title">Rename session</div>
+        <input
+          ref={input}
+          className="modal-input"
+          value={value}
+          onChange={(e) => setValue(e.target.value)}
+          onKeyDown={(e) => {
+            if (e.key === 'Enter') onSave(value)
+            if (e.key === 'Escape') onCancel()
+          }}
+        />
+        <div className="modal-actions">
+          <button className="btn ghost" onClick={onCancel}>Cancel</button>
+          <button className="btn primary" onClick={() => onSave(value)}>Rename</button>
         </div>
-        <pre className="history-transcript">
-          {props.transcript ??
-            (detail
-              ? 'Select a node to read its transcript.'
-              : 'Reading the orchestration log…')}
-        </pre>
       </div>
     </div>
   )

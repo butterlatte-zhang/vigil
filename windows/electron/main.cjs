@@ -5,7 +5,7 @@
 // outside the Electron process means node-pty never has to be rebuilt against Electron's
 // ABI and the same build can also be opened in a normal browser for debugging.
 
-const { app, BrowserWindow, shell } = require('electron')
+const { app, BrowserWindow, dialog, ipcMain, shell } = require('electron')
 const { spawn } = require('node:child_process')
 const path = require('node:path')
 
@@ -72,13 +72,41 @@ async function createWindow() {
     title: 'Vigil',
     backgroundColor: '#161719',
     show: false,
+    // Self-drawn 50pt top bar (matching the macOS app); native Windows caption buttons
+    // are drawn by the overlay at the right edge, and the title bar colour follows the
+    // resolved Vigil theme via the preload bridge.
+    titleBarStyle: 'hidden',
+    ...(process.platform === 'win32'
+      ? { titleBarOverlay: { color: '#202126', symbolColor: 'rgba(255,255,255,0.93)', height: 50 } }
+      : {}),
     webPreferences: {
+      preload: path.join(__dirname, 'preload.cjs'),
       contextIsolation: true,
       nodeIntegration: false,
       sandbox: true,
     },
   })
   win.once('ready-to-show', () => win.show())
+  ipcMain.handle('vigil:pickFolder', async () => {
+    const result = await dialog.showOpenDialog(win, {
+      properties: ['openDirectory', 'createDirectory'],
+      title: 'Add project',
+    })
+    return result.canceled ? null : result.filePaths[0] ?? null
+  })
+  ipcMain.on('vigil:setTheme', (_event, theme) => {
+    if (!win || process.platform !== 'win32') return
+    const dark = theme !== 'light'
+    try {
+      win.setTitleBarOverlay({
+        color: dark ? '#202126' : '#F4F4F6',
+        symbolColor: dark ? 'rgba(255,255,255,0.93)' : 'rgba(0,0,0,0.88)',
+        height: 50,
+      })
+    } catch {
+      // older Electron: overlay chrome simply keeps its launch colour
+    }
+  })
   win.webContents.setWindowOpenHandler(({ url }) => {
     shell.openExternal(url)
     return { action: 'deny' }
