@@ -445,6 +445,10 @@ export class Orchestrator {
       this.failRoute(effect.to, 'no live cell', 'route dropped: no cell', effect.replyID)
       return
     }
+    const preBaseline =
+      caller && this.transcripts.get(effect.to)
+        ? fileLength(this.transcripts.get(effect.to) as string)
+        : 0
     void cell
       .inject(effect.text)
       .then((ack: InjectAck) => {
@@ -457,7 +461,7 @@ export class Orchestrator {
         }
         if (kind === 'message') this.watchdogDelivered.add(effect.to)
         if (effect.replyID && effect.text.startsWith('MESSAGE FROM')) {
-          const tracked = this.registerDelivery(effect.to, caller, effect.text)
+          const tracked = this.registerDelivery(effect.to, caller, effect.text, preBaseline)
           const tail = tracked
             ? 'confirming delivery (a SYSTEM receipt will follow on failure)'
             : "this agent's context entry cannot be externally confirmed (no delivery receipt)"
@@ -580,8 +584,12 @@ export class Orchestrator {
     this.cancelSpawnWatchdog(node)
     const cell = this.cells.get(node)
     if (cell) {
+      // Freeze the last frame, then drop the cell: the node is a dead record now, and a
+      // lingering cell would make the UI believe it is still live (hiding Resume).
       const screen = cell.snapshot()
       if (screen.trim() !== '') this.frozenScreens.set(node, screen)
+      cell.terminate()
+      this.cells.delete(node)
     }
     if (code === null) {
       this.store.send({ type: 'nodeFailed', node, reason: 'process ended without an exit code' })
@@ -759,7 +767,8 @@ export class Orchestrator {
 
   // MARK: delivery confirmation
 
-  private registerDelivery(target: NodeID, caller: NodeID | null, text: string): boolean {
+  private registerDelivery(target: NodeID, caller: NodeID | null, text: string,
+                           baseline: number): boolean {
     if (!caller) return false
     const kind = this.nodeKinds.get(target)
     if (kind === 'opencode' || kind === 'codex') {
@@ -781,7 +790,7 @@ export class Orchestrator {
       caller,
       text,
       attempts: 0,
-      baseline: fileLength(p),
+      baseline: baseline || fileLength(p),
       lastAttemptAt: Date.now(),
     })
     return true

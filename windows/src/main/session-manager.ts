@@ -390,6 +390,10 @@ export class SessionManager {
     return this.sessions.get(sessionId)?.orchestrator.replayFor(nodeId) ?? ''
   }
 
+  snapshot(sessionId: string, nodeId: NodeID): string {
+    return this.sessions.get(sessionId)?.orchestrator.snapshotFor(nodeId) ?? ''
+  }
+
   probeDump(sessionId: string, nodeId: NodeID): unknown {
     return this.sessions.get(sessionId)?.orchestrator.probeDump(nodeId) ?? null
   }

@@ -154,7 +154,9 @@ export function startServer(
             type: 'terminal',
             sessionId: String(msg.sessionId),
             nodeId: String(msg.nodeId),
-            data: manager.replay(String(msg.sessionId), String(msg.nodeId)),
+            data:
+              manager.replay(String(msg.sessionId), String(msg.nodeId)) ||
+              manager.snapshot(String(msg.sessionId), String(msg.nodeId)),
           }),
         )
         return
