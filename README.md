@@ -85,6 +85,23 @@ cd vigil/app
 swift run Vigil
 ```
 
+### Windows
+
+A design-faithful Windows port lives in [`windows/`](./windows/README.md). SwiftUI,
+AppKit and libghostty are macOS-only, so it is implemented in TypeScript (Electron +
+ConPTY + xterm.js) while keeping Vigil's core model: the same node tree, the same
+role-scoped MCP tool surface, the same hook-driven observation channel, the same
+`orchestration.jsonl` / `meta.json` session format, and the same settings files under
+`~/.config/vigil`. Claude Code and Codex are wired; OpenCode is wired but detection-gated
+and unverified. Requires Node.js 20+:
+
+```bat
+cd windows
+npm install
+npm start
+```
+
+
 On first launch Vigil probes your `PATH` for installed agent CLIs (claude → codex → opencode) and seeds its registry from what it finds. Open a project, pick an agent, type a task, and the manager starts. If no agent CLI is found, the launcher shows a warning banner instead of pretending.
 
 ## Why Vigil?
