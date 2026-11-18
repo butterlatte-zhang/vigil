@@ -291,6 +291,9 @@ export class SessionManager {
         model: input.model,
         userConfigDir: this.configDir,
         resumeRootSessionId: input.resumeRootSessionId,
+        agentBins: Object.fromEntries(this.detected.map((d) => [d.kind, d.bin])) as Partial<
+          Record<AgentCLIKind, string>
+        >,
       },
       {
         onStateChanged: () => this.scheduleState(),

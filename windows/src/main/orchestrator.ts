@@ -58,6 +58,8 @@ export interface OrchestratorConfig {
   model: string | null
   userConfigDir: string | null
   resumeRootSessionId: string | null
+  /** Absolute binaries the prober found — the fallback when agents.json is absent. */
+  agentBins?: Partial<Record<AgentCLIKind, string>>
 }
 
 const REPORT_WATCHDOG_TEXT =
@@ -167,7 +169,10 @@ export class Orchestrator {
     const registry = this.cfg.userConfigDir ? AgentRegistry.load(this.cfg.userConfigDir) : null
     for (const kind of ['claude', 'codex', 'opencode'] as AgentCLIKind[]) {
       const entry = registry ? registry.entries.find((e) => e.kind === kind) : undefined
-      const bin = entry?.bin ?? ({ claude: 'claude', codex: 'codex', opencode: 'opencode' } as Record<string, string>)[kind]
+      const bin =
+        entry?.bin ??
+        this.cfg.agentBins?.[kind] ??
+        ({ claude: 'claude', codex: 'codex', opencode: 'opencode' } as Record<string, string>)[kind]
       this.harnesses.set(kind, make(bin, kind))
     }
   }
@@ -573,7 +578,22 @@ export class Orchestrator {
       },
     })
     this.cells.set(node.id, cell)
-    cell.start()
+    try {
+      cell.start()
+    } catch (e) {
+      // A spawn that cannot even create the process must fail the node honestly, not
+      // leave a tree entry that only later reads as "spawn stalled".
+      this.orchLog('cell_launch_aborted', { node: node.id, reason: String(e) })
+      this.cells.delete(node.id)
+      this.cancelSpawnWatchdog(node.id)
+      try {
+        cell.terminate()
+      } catch {
+        // ignore
+      }
+      this.store.send({ type: 'nodeFailed', node: node.id, reason: `spawn failed: ${String(e)}` })
+      return
+    }
     if (markOnline) this.store.send({ type: 'nodeOnline', node: node.id })
   }
 
