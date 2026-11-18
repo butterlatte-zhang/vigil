@@ -7,6 +7,12 @@ and the manager's context staying lean.
 The macOS app in `app/` is Swift + SwiftUI + libghostty. None of those exist on Windows,
 so this directory is a **design-faithful port**, not a build of the Swift sources:
 
+The Windows shell mirrors the macOS app's UI and interaction model: 248pt sidebar
+(Projects · Chats · Settings · Archived), 50pt top bar, launcher card with project/agent
+chips and a plain-Enter submit, the top-right tree card and notification stack, read-only
+history with a self-rendered transcript + stats, a bottom scratch shell, and light/dark
+themes following `appearance.json` / the OS.
+
 | macOS (Swift) | Windows (TypeScript) |
 |---|---|
 | `VigilCore/Domain.swift`, `Tree.swift`, `SessionStore.swift` | `src/core/domain.ts`, `src/core/store.ts` — the same tree invariants, Command-in / Effect-out direction, attention-priority derivation |
@@ -18,7 +24,10 @@ so this directory is a **design-faithful port**, not a build of the Swift source
 | `MCPToolServer.swift`, `HookGateway.swift` | `src/main/mcp-server.ts`, `src/main/hook-gateway.ts` — same JSON-RPC subset, same role-scoped tool surface |
 | `ClaudeCodeHarness.swift`, `CodexHarness.swift`, `OpenCodeHarness.swift` | `src/main/harness/{claude,codex,opencode}.ts` |
 | `SessionArchive.swift` | `src/main/archive.ts` — same `orchestration.jsonl` + `meta.json` formats |
-| SwiftUI shell | React renderer (`src/renderer/`) in an Electron window |
+| SwiftUI shell (SidebarView / CenterView2 / TreePanel / NotifStack / HistoryPane) | React renderer (`src/renderer/`), same layout, tokens and components |
+| `TranscriptRender.swift` | `src/main/transcript.ts` + `src/renderer/TranscriptView.tsx` |
+| `BottomShell.swift` | `src/main/bottom-shell.ts` + the bottom panel |
+| `appearance.json` theme/accent | `src/main/appearance.ts` + CSS variables; follows the OS live |
 
 ## Status
 
@@ -110,11 +119,16 @@ deliberate deviation from the macOS table.)
 | Shortcut | Action |
 |---|---|
 | Ctrl+Shift+T | New session (launcher) |
-| Ctrl+Shift+W | Close session |
-| Ctrl+Shift+B | Show / hide sidebar |
-| Ctrl+Shift+J | Show / hide the tree panel |
+| Ctrl+Shift+O | Add project… |
+| Ctrl+, | Open the Settings workspace |
+| Ctrl+1–9 | Jump to the Nth visible session row |
+| Ctrl+Alt+] / [ | Next / previous session |
+| Ctrl+Shift+] / [ | Next / previous node |
 | Ctrl+Shift+U | Jump to the latest node needing attention |
-| Ctrl+Shift+] / [ | Next / previous session |
+| Ctrl+Shift+B | Show / hide sidebar |
+| Ctrl+Shift+J | Show / hide the bottom terminal |
+| Ctrl+Shift+R | Rename session |
+| Ctrl+Shift+W | Close session |
 
 ## Windows-specific notes
 
@@ -127,16 +141,23 @@ deliberate deviation from the macOS table.)
   headless `@xterm/headless` mirror of each cell. The same claude dim-rule probe, codex
   `›` composer probe, opencode `┃` probe and `│ > │` fallback are ported; long pastes
   into a horizontally scrolled composer are recognised by prefix/suffix/length.
-- **No Sparkle auto-update, no bottom scratch shell panel, no Xcode thin shell.** The
-  scrape fallbacks for denied permissions (`PermWatcher`) and ESC-ended turns
-  (`TurnWatcher`) are not ported; hook-driven turn state and the API-error transcript scan
-  are. These are honest current limitations, not hidden behaviour.
+- **No Sparkle auto-update and no Xcode thin shell.** The scrape fallbacks for denied
+  permissions (`PermWatcher`) and ESC-ended turns (`TurnWatcher`) are not ported;
+  hook-driven turn state and the API-error transcript scan are. These are honest current
+  limitations, not hidden behaviour.
+- **Native window chrome.** The macOS traffic lights are replaced by the Windows caption
+  buttons drawn in a 50pt title-bar overlay; the top bar reserves that strip on the right.
+- **Settings is a real workspace.** The Settings pseudo-project opens
+  `~/.config/vigil` and seeds a `README.md` guide, exactly like the macOS app's
+  agent-neutral config workflow.
 - **Windows has no reliable unprivileged symlinks**, so codex passthrough files
   (`auth.json`, `AGENTS.md`, `prompts/`) are copied into the per-node home each launch
   instead of symlinked.
 - **Trust prompts**: the orchestrator watches the first two minutes of every cell for
-  claude's "Do you trust the files" box and answers it in the CLI's own UI, as the macOS
-  app does.
+  claude's directory-trust box and answers it in the CLI's own UI. Claude 2.1.32x changed
+  the wording to "Quick safety check … Is this a project you created or one you trust?"
+  and made **No, exit** the first option, so the watcher selects the second option
+  ("Yes, I trust this folder"); older wording still gets "1".
 
 ## Security
 
