@@ -45,7 +45,9 @@ function startCore() {
         if (line.startsWith('VIGIL_READY ')) {
           try {
             const info = JSON.parse(line.slice('VIGIL_READY '.length))
-            resolve(`http://127.0.0.1:${info.port}/`)
+            // The URL carries the per-process WebSocket token — loading the bare origin
+            // would make the WS upgrade 401 and leave the UI stuck (silently unclickable).
+            resolve(info.url ?? `http://127.0.0.1:${info.port}/`)
           } catch (e) {
             reject(e)
           }
