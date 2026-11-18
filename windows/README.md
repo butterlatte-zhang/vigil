@@ -73,6 +73,18 @@ npm run typecheck
 The renderer is also a normal web app: `npm run build:core && npm run build:renderer`,
 then `node dist/main/index.js` prints a loopback URL with a per-process token.
 
+### Package a Windows build
+
+```bat
+npm run package:win
+```
+
+Produces `release\Vigil-win32-x64\Vigil.exe` — a self-contained build (Electron runtime,
+core, renderer, shims and the three runtime node_modules) with no installer framework and
+no asar. Copy the folder to a per-user location such as
+`%LOCALAPPDATA%\Programs\Vigil` and create a shortcut to `Vigil.exe` if you want it in the
+Start Menu. `release/` is gitignored.
+
 ## How a session runs
 
 1. The launcher probes `PATH` for agent CLIs and seeds `~/.config/vigil/` on first run.

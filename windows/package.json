@@ -3,7 +3,7 @@
   "productName": "Vigil",
   "version": "0.1.0",
   "private": true,
-  "description": "Vigil for Windows — a native Windows shell around a tree of Claude Code / Codex / OpenCode agents.",
+  "description": "Vigil for Windows \u2014 a native Windows shell around a tree of Claude Code / Codex / OpenCode agents.",
   "type": "module",
   "main": "electron/main.cjs",
   "scripts": {
@@ -13,7 +13,8 @@
     "start": "npm run build && electron .",
     "dev": "npm run build:core && vite build && electron . --dev",
     "typecheck": "tsc -p tsconfig.json --noEmit",
-    "test": "vitest run"
+    "test": "vitest run",
+    "package:win": "npm run build && node scripts/package-win.mjs"
   },
   "dependencies": {
     "@xterm/addon-fit": "^0.11.0",
