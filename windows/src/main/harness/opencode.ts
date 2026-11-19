@@ -84,10 +84,12 @@ export class OpenCodeHarness implements Harness {
     if (mode === 'bypassPermissions') args.push('--auto')
     if (model) args.push('-m', model)
     if (resolved.entry?.extraArgs?.length) args.push(...resolved.entry.extraArgs)
+    if (resolved.projectCfg.extraArgs.length > 0) args.push(...resolved.projectCfg.extraArgs)
     if (input.resumeSessionId) args.push('--session', input.resumeSessionId)
 
     const env = baseEnv()
     if (resolved.entry?.env) Object.assign(env, resolved.entry.env)
+    if (Object.keys(resolved.projectCfg.env).length > 0) Object.assign(env, resolved.projectCfg.env)
     Object.assign(env, this.opts.env.nodeEnv)
     env.OPENCODE_CONFIG_CONTENT = JSON.stringify(cfg)
     if (input.hookEndpoint) {

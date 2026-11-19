@@ -6,11 +6,14 @@ import {
   AgentRegistry,
   ensureInstalled,
   loadLauncherAgent,
+  loadProjectLaunchConfig,
   loadPromptTable,
   loadRoleTable,
   loadRuntime,
   promptBaseFor,
 } from '../src/core/config.js'
+import { resolveAgent } from '../src/main/harness/resolve.js'
+import { ClaudeHarness } from '../src/main/harness/claude.js'
 
 const dirs: string[] = []
 function tmp(): string {
@@ -125,7 +128,6 @@ describe('runtime.json + launcher + seeding', () => {
     expect(t.autoName).toBe(false)
     expect(t.terminalDebugLog).toBe('metrics')
   })
-
   it('seeds a usable config dir without overwriting existing files', () => {
     const d = tmp()
     ensureInstalled(d, [{ kind: 'claude', bin: 'C:/bin/claude.exe' }])
@@ -135,5 +137,118 @@ describe('runtime.json + launcher + seeding', () => {
     fs.writeFileSync(path.join(d, 'agents.json'), '{"agents":{}}')
     ensureInstalled(d, [])
     expect(fs.readFileSync(path.join(d, 'agents.json'), 'utf8')).toBe('{"agents":{}}')
+  })
+})
+
+describe('project .vigil/config.json', () => {
+  it('loads the project overlay and drops bad field types', () => {
+    const project = tmp()
+    fs.mkdirSync(path.join(project, '.vigil'), { recursive: true })
+    fs.writeFileSync(
+      path.join(project, '.vigil', 'config.json'),
+      JSON.stringify({
+        agent: 'claude-proxy',
+        addDirs: ['project_peak', 42, 'mserver_csharp', ''],
+        additionalClaudeMd: true,
+        extraArgs: ['--verbose'],
+        env: { A: '1', B: 2 },
+      }),
+    )
+    const cfg = loadProjectLaunchConfig(project)
+    expect(cfg.agent).toBe('claude-proxy')
+    expect(cfg.addDirs).toEqual(['project_peak', 'mserver_csharp'])
+    expect(cfg.additionalClaudeMd).toBe(true)
+    expect(cfg.extraArgs).toEqual(['--verbose'])
+    expect(cfg.env).toEqual({ A: '1' })
+  })
+
+  it('is inert when the file is missing, broken, or there is no project', () => {
+    const project = tmp()
+    expect(loadProjectLaunchConfig(project)).toMatchObject({
+      agent: null,
+      addDirs: [],
+      additionalClaudeMd: false,
+      extraArgs: [],
+      env: {},
+    })
+    fs.mkdirSync(path.join(project, '.vigil'), { recursive: true })
+    fs.writeFileSync(path.join(project, '.vigil', 'config.json'), '{broken')
+    expect(loadProjectLaunchConfig(project).addDirs).toEqual([])
+    expect(loadProjectLaunchConfig(null).agent).toBeNull()
+  })
+
+  it('lets the project pin the root agent while children keep role resolution', () => {
+    const d = tmp()
+    const project = tmp()
+    fs.writeFileSync(
+      path.join(d, 'agents.json'),
+      JSON.stringify({
+        agents: {
+          claude: { bin: 'C:/bin/claude.exe', kind: 'claude' },
+          alt: { bin: 'C:/bin/alt.exe', kind: 'claude', extraArgs: ['--x'] },
+        },
+      }),
+    )
+    fs.mkdirSync(path.join(project, '.vigil'), { recursive: true })
+    fs.writeFileSync(
+      path.join(project, '.vigil', 'config.json'),
+      JSON.stringify({ agent: 'alt' }),
+    )
+    const base = { userConfigDir: d, fallbackBin: 'claude', cwd: project, kind: null }
+    const root = resolveAgent({ ...base, role: 'leaf', isRoot: true, sessionKey: 'claude' })
+    expect(root.entry?.key).toBe('alt')
+    expect(root.projectCfg.agent).toBe('alt')
+    const child = resolveAgent({ ...base, role: 'leaf', isRoot: false, sessionKey: 'claude' })
+    expect(child.entry?.key).toBe('claude')
+  })
+
+  it('feeds the overlay into the claude launch spec', () => {
+    const d = tmp()
+    const project = tmp()
+    const configRoot = tmp()
+    fs.writeFileSync(
+      path.join(d, 'agents.json'),
+      JSON.stringify({ agents: { claude: { bin: 'C:/bin/claude.exe', kind: 'claude' } } }),
+    )
+    fs.mkdirSync(path.join(project, '.vigil'), { recursive: true })
+    fs.writeFileSync(
+      path.join(project, '.vigil', 'config.json'),
+      JSON.stringify({
+        addDirs: ['project_peak', 'mserver_csharp'],
+        additionalClaudeMd: true,
+        extraArgs: ['--verbose'],
+        env: { FOO: 'bar' },
+      }),
+    )
+    const harness = new ClaudeHarness({
+      bin: 'claude',
+      env: { nodeBin: 'node', nodeCommand: 'node', hookScript: 'hook.js', nodeEnv: {} },
+      configRoot,
+      permissionMode: 'default',
+      model: null,
+      userConfigDir: d,
+      agentKey: 'claude',
+    })
+    const spec = harness.launchSpec({
+      task: '',
+      cwd: project,
+      nodeID: 'n1',
+      role: 'leaf',
+      isRoot: true,
+      model: null,
+      resumeSessionId: null,
+      mcpEndpoint: null,
+      hookEndpoint: null,
+      agentKey: 'claude',
+    })
+    const i = spec.args.indexOf('--add-dir')
+    expect(i).toBeGreaterThanOrEqual(0)
+    expect(spec.args.slice(i + 1, i + 3)).toEqual([
+      path.resolve(project, 'project_peak'),
+      path.resolve(project, 'mserver_csharp'),
+    ])
+    expect(spec.args).toContain('--verbose')
+    expect(spec.env.CLAUDE_CODE_ADDITIONAL_DIRECTORIES_CLAUDE_MD).toBe('1')
+    expect(spec.env.FOO).toBe('bar')
   })
 })

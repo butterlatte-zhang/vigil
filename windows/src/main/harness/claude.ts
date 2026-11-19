@@ -121,9 +121,21 @@ export class ClaudeHarness implements Harness {
     if (model) args.push('--model', model)
     if (resolved.entry?.extraArgs?.length) args.push(...resolved.entry.extraArgs)
 
+    // Project overlay (<cwd>/.vigil/config.json): extra working directories and flags.
+    // addDirs is claude-only; codex/opencode still get extraArgs/env below in their own
+    // harnesses (same project overlay, no directory semantics).
+    const projectCfg = resolved.projectCfg
+    if (projectCfg.addDirs.length > 0) {
+      args.push('--add-dir', ...projectCfg.addDirs.map((d) => path.resolve(input.cwd, d)))
+    }
+    if (projectCfg.extraArgs.length > 0) args.push(...projectCfg.extraArgs)
+
     const env = baseEnv()
     for (const k of strippedSessionMarkers) delete env[k]
     if (resolved.entry?.env) Object.assign(env, resolved.entry.env)
+    if (Object.keys(projectCfg.env).length > 0) Object.assign(env, projectCfg.env)
+    // claude only: CLAUDE.md discovery from the folders added above.
+    if (projectCfg.additionalClaudeMd) env.CLAUDE_CODE_ADDITIONAL_DIRECTORIES_CLAUDE_MD = '1'
     Object.assign(env, this.opts.env.nodeEnv)
     env.TERM = 'xterm-256color'
 

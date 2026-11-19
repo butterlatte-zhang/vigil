@@ -98,6 +98,9 @@ public struct CodexHarness: Harness {
             args.append("--dangerously-bypass-hook-trust")   // trust our per-node hooks headlessly
             if let m = resolvedModel { args += ["-m", m] }
             if let extra = entry?.extraArgs, !extra.isEmpty { args += extra }
+            if let projectCfg = resolved.projectCfg, !projectCfg.extraArgs.isEmpty {
+                args += projectCfg.extraArgs
+            }
             // First-turn prompt = the identity skill folded ahead of the task (codex has
             // no --append-system-prompt; the skill is the node's identity + tool guidance).
             let skill = ClaudeCodeHarness.skill(
@@ -119,6 +122,7 @@ public struct CodexHarness: Harness {
         // no known nested-session marker to strip.
         var env = ProcessInfo.processInfo.environment
         if let e = entry { for (k, v) in e.env { env[k] = v } }
+        if let projectCfg = resolved.projectCfg { for (k, v) in projectCfg.env { env[k] = v } }
         env["CODEX_HOME"] = home
         env["TERM"] = vigilFallbackTERM
 

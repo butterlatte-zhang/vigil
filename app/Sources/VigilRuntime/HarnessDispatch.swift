@@ -13,6 +13,8 @@ import VigilCore
 struct ResolvedAgent {
     let entry: AgentEntry?
     let roleCfg: RoleSetting?
+    /// `<cwd>/.vigil/config.json` overlay (addDirs / extraArgs / env / root agent).
+    let projectCfg: ProjectLaunchConfig?
     /// Family of the SESSION's launcher-chosen entry (unfiltered registry lookup;
     /// nil = no registry / key missed). Used by resolveModel's session guard.
     let sessionKind: AgentCLIKind?
@@ -48,11 +50,15 @@ enum HarnessResolve {
         }
         let roles = userConfigDir.map { RoleTable.load(configDir: $0, projectCwd: cwd) }
         let roleCfg = roles?.setting(role: role, isRoot: isRoot)
-        let entry = resolveEntry(registry: registry, sessionKey: sessionKey,
+        // Project overlay may pin the ROOT cell's agent; children keep role-based
+        // resolution (their per-project switch is `.vigil/roles.json`'s role.agent).
+        let projectCfg = userConfigDir.map { ProjectLaunchConfig.load(projectCwd: cwd) }
+        let effectiveSessionKey = (isRoot ? projectCfg?.agent : nil) ?? sessionKey
+        let entry = resolveEntry(registry: registry, sessionKey: effectiveSessionKey,
                                  roleKey: isRoot ? nil : roleCfg?.agent, kind: kind)
         let promptTable = userConfigDir.map { PromptTable.load(dir: $0) }
-        return ResolvedAgent(entry: entry, roleCfg: roleCfg,
-                             sessionKind: sessionKey.flatMap { registry?[$0]?.kind },
+        return ResolvedAgent(entry: entry, roleCfg: roleCfg, projectCfg: projectCfg,
+                             sessionKind: effectiveSessionKey.flatMap { registry?[$0]?.kind },
                              roleAgentKind: roleCfg?.modelAnchorAgent.flatMap { registry?[$0]?.kind },
                              promptBase: promptTable?.base(role: role, isRoot: isRoot),
                              promptExtras: promptTable?.extras)

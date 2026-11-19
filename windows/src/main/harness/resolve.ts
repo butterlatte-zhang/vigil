@@ -14,8 +14,10 @@ import {
   AgentRegistry,
   type AgentEntry,
   agentUsable,
+  loadProjectLaunchConfig,
   loadPromptTable,
   loadRoleTable,
+  type ProjectLaunchConfig,
   promptBaseFor,
   type RoleSetting,
 } from '../../core/config.js'
@@ -24,6 +26,8 @@ import type { PromptExtras } from '../../core/prompts.js'
 export interface ResolvedAgent {
   entry: AgentEntry | null
   roleCfg: RoleSetting
+  /** `<cwd>/.vigil/config.json` overlay (addDirs / extraArgs / env / root agent). */
+  projectCfg: ProjectLaunchConfig
   sessionKind: AgentCLIKind | null
   roleAgentKind: AgentCLIKind | null
   promptBase: string | null
@@ -52,9 +56,13 @@ export function resolveAgent(input: ResolveInput): ResolvedAgent {
         ? roleTable.subManager
         : roleTable.worker
     : {}
+  const projectCfg = loadProjectLaunchConfig(input.userConfigDir ? input.cwd : null)
+  // Project overlay may pin the ROOT cell's agent; children keep role-based resolution
+  // (their per-project switch is `.vigil/roles.json`'s role.agent).
+  const sessionKey = input.isRoot && projectCfg.agent ? projectCfg.agent : input.sessionKey
   const entry = resolveEntry(
     registry,
-    input.sessionKey,
+    sessionKey,
     input.isRoot ? null : roleCfg.agent ?? null,
     input.kind ?? null,
   )
@@ -62,7 +70,8 @@ export function resolveAgent(input: ResolveInput): ResolvedAgent {
   return {
     entry,
     roleCfg,
-    sessionKind: input.sessionKey ? registry?.get(input.sessionKey)?.kind ?? null : null,
+    projectCfg,
+    sessionKind: sessionKey ? registry?.get(sessionKey)?.kind ?? null : null,
     roleAgentKind: roleCfg.modelAnchorAgent ? registry?.get(roleCfg.modelAnchorAgent)?.kind ?? null : null,
     promptBase: promptTable ? promptBaseFor(promptTable, input.role, input.isRoot) : null,
     promptExtras: promptTable?.extras ?? {},

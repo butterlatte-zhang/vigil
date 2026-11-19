@@ -186,6 +186,7 @@ export class CodexHarness implements Harness {
       args.push('--dangerously-bypass-hook-trust')
       if (model) args.push('-m', model)
       if (resolved.entry?.extraArgs?.length) args.push(...resolved.entry.extraArgs)
+      if (resolved.projectCfg.extraArgs.length > 0) args.push(...resolved.projectCfg.extraArgs)
       const skill = skillText({
         role: input.role,
         isRoot: input.isRoot,
@@ -201,6 +202,7 @@ export class CodexHarness implements Harness {
 
     const env = baseEnv()
     if (resolved.entry?.env) Object.assign(env, resolved.entry.env)
+    if (Object.keys(resolved.projectCfg.env).length > 0) Object.assign(env, resolved.projectCfg.env)
     Object.assign(env, this.opts.env.nodeEnv)
     env.CODEX_HOME = home
     env.TERM = 'xterm-256color'

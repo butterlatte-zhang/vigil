@@ -178,6 +178,52 @@ export function loadRoleTable(configDirPath: string | null, projectCwd: string |
   return table
 }
 
+// MARK: - <project>/.vigil/config.json (project launch overlay)
+
+/**
+ * Project-scoped launch overlay, read from `<projectCwd>/.vigil/config.json`.
+ * Applies to every cell launched in that project, so one repo can opt into extra
+ * working directories (e.g. a monorepo workspace root) without a global agent entry.
+ * Tolerance follows the file contract: missing file / bad field → that field's default.
+ */
+export interface ProjectLaunchConfig {
+  /** Root cell only: registry key that overrides the launcher-chosen agent. Children keep role-based resolution. */
+  agent: string | null
+  /** Extra `--add-dir` roots for the claude harness; relative paths resolve against the project cwd. */
+  addDirs: string[]
+  /** claude only: load CLAUDE.md from the `--add-dir` folders (CLAUDE_CODE_ADDITIONAL_DIRECTORIES_CLAUDE_MD=1). */
+  additionalClaudeMd: boolean
+  /** Appended after the registry entry's own extraArgs. */
+  extraArgs: string[]
+  /** Overlays the registry entry's env (project wins over agents.json; Vigil-internal env still wins over both). */
+  env: Record<string, string>
+}
+
+export function loadProjectLaunchConfig(projectCwd: string | null): ProjectLaunchConfig {
+  const cfg: ProjectLaunchConfig = {
+    agent: null,
+    addDirs: [],
+    additionalClaudeMd: false,
+    extraArgs: [],
+    env: {},
+  }
+  if (!projectCwd) return cfg
+  const dto = readJson(path.join(projectCwd, '.vigil', 'config.json'))
+  if (!dto || typeof dto !== 'object') return cfg
+  const strings = (v: unknown): string[] =>
+    Array.isArray(v) ? v.filter((x): x is string => typeof x === 'string' && x !== '') : []
+  if (typeof dto.agent === 'string' && dto.agent !== '') cfg.agent = dto.agent
+  cfg.addDirs = strings(dto.addDirs)
+  cfg.additionalClaudeMd = dto.additionalClaudeMd === true
+  cfg.extraArgs = strings(dto.extraArgs)
+  if (dto.env && typeof dto.env === 'object') {
+    cfg.env = Object.fromEntries(
+      Object.entries(dto.env).filter(([, v]) => typeof v === 'string'),
+    ) as Record<string, string>
+  }
+  return cfg
+}
+
 // MARK: - prompts.json
 
 export interface PromptTable {
