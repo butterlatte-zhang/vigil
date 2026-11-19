@@ -271,6 +271,60 @@ public struct RoleTable: Equatable, Sendable {
     }
 }
 
+// MARK: - <project>/.vigil/config.json (project launch overlay)
+
+/// Project-scoped launch overlay read from `<projectCwd>/.vigil/config.json`.
+/// Applies to every cell launched in that project, so one repo can opt into extra
+/// working directories (a monorepo workspace root) without a global agent entry.
+/// Same tolerance contract as the other files: missing/unparseable file → defaults.
+public struct ProjectLaunchConfig: Equatable, Sendable {
+    /// Root cell only: registry key that overrides the launcher-chosen agent.
+    /// Children keep role-based resolution (`<cwd>/.vigil/roles.json`'s role.agent).
+    public var agent: String?
+    /// Extra `--add-dir` roots for the claude harness; relative paths resolve against the project cwd.
+    public var addDirs: [String]
+    /// claude only: load CLAUDE.md from the `--add-dir` folders
+    /// (CLAUDE_CODE_ADDITIONAL_DIRECTORIES_CLAUDE_MD=1).
+    public var additionalClaudeMd: Bool
+    /// Appended after the registry entry's own extraArgs.
+    public var extraArgs: [String]
+    /// Overlays the registry entry's env (project wins over agents.json).
+    public var env: [String: String]
+
+    public init(agent: String? = nil, addDirs: [String] = [],
+                additionalClaudeMd: Bool = false,
+                extraArgs: [String] = [], env: [String: String] = [:]) {
+        self.agent = agent
+        self.addDirs = addDirs
+        self.additionalClaudeMd = additionalClaudeMd
+        self.extraArgs = extraArgs
+        self.env = env
+    }
+
+    public static let empty = ProjectLaunchConfig()
+
+    public static func load(projectCwd: String?) -> ProjectLaunchConfig {
+        guard let cwd = projectCwd else { return .empty }
+        let vigilDir = (cwd as NSString).appendingPathComponent(".vigil")
+        let path = (vigilDir as NSString).appendingPathComponent("config.json")
+        guard let data = FileManager.default.contents(atPath: path),
+              let dto = try? JSONDecoder().decode(DTO.self, from: data)
+        else { return .empty }
+        return ProjectLaunchConfig(
+            agent: (dto.agent?.isEmpty == false) ? dto.agent : nil,
+            addDirs: (dto.addDirs ?? []).filter { !$0.isEmpty },
+            additionalClaudeMd: dto.additionalClaudeMd ?? false,
+            extraArgs: (dto.extraArgs ?? []).filter { !$0.isEmpty },
+            env: dto.env ?? [:])
+    }
+
+    private struct DTO: Decodable {
+        var agent: String?; var addDirs: [String]?
+        var additionalClaudeMd: Bool?
+        var extraArgs: [String]?; var env: [String: String]?
+    }
+}
+
 // MARK: - prompts.json (user-owned base identity text, per role)
 
 /// The user-editable base identity text for each of the three roles — an optional

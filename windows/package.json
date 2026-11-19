@@ -1,0 +1,44 @@
+{
+  "name": "vigil-windows",
+  "productName": "Vigil",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Vigil for Windows \u2014 a native Windows shell around a tree of Claude Code / Codex / OpenCode agents.",
+  "type": "module",
+  "main": "electron/main.cjs",
+  "scripts": {
+    "build:core": "tsc -p tsconfig.json",
+    "build:renderer": "vite build",
+    "build": "npm run build:core && npm run build:renderer",
+    "start": "npm run build && electron .",
+    "dev": "npm run build:core && vite build && electron . --dev",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "vitest run",
+    "package:win": "npm run build && node scripts/package-win.mjs"
+  },
+  "dependencies": {
+    "@xterm/addon-fit": "^0.11.0",
+    "@xterm/headless": "^6.0.0",
+    "@xterm/xterm": "^6.0.0",
+    "node-pty": "^1.1.0",
+    "react": "^19.2.0",
+    "react-dom": "^19.2.0",
+    "ws": "^8.18.3"
+  },
+  "devDependencies": {
+    "@types/node": "^24.10.1",
+    "@types/react": "^19.2.2",
+    "@types/react-dom": "^19.2.2",
+    "@types/ws": "^8.18.1",
+    "@vitejs/plugin-react": "^5.1.1",
+    "electron": "^45.3.4",
+    "typescript": "^5.9.3",
+    "vite": "^7.2.2",
+    "vitest": "^4.0.8"
+  },
+  "allowScripts": {
+    "node-pty@1.1.0": true,
+    "esbuild@0.28.2": true,
+    "electron@45.3.4": true
+  }
+}
