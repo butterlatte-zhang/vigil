@@ -15,7 +15,8 @@
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "test": "vitest run",
     "postinstall": "node scripts/patch-node-pty.mjs",
-    "package:win": "npm run build && node scripts/package-win.mjs"
+    "package:win": "npm run build && node scripts/package-win.mjs",
+    "install:local": "npm run package:win && node scripts/install-local.mjs"
   },
   "dependencies": {
     "@xterm/addon-fit": "^0.11.0",

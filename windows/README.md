@@ -85,6 +85,17 @@ no asar. Copy the folder to a per-user location such as
 `%LOCALAPPDATA%\Programs\Vigil` and create a shortcut to `Vigil.exe` if you want it in the
 Start Menu. `release/` is gitignored.
 
+### Install locally
+
+```bat
+npm run install:local
+```
+
+Builds the package, stops the running `Vigil.exe`, replaces
+`%LOCALAPPDATA%\Programs\Vigil` with the new build (the previous copy is kept as
+`Vigil.bak-install` only until the copy succeeds, and restored if it does not) and
+relaunches the app. User data under `~/.config/vigil` and `%APPDATA%\Vigil` is untouched.
+
 ## How a session runs
 
 1. The launcher probes `PATH` for agent CLIs and seeds `~/.config/vigil/` on first run.
