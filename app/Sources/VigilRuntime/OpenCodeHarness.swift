@@ -96,6 +96,9 @@ public struct OpenCodeHarness: Harness {
         if Self.autoApprove(roleCfg?.access ?? permissionMode) { args.append("--auto") }
         if let m = resolvedModel { args += ["-m", m] }
         if let extra = entry?.extraArgs, !extra.isEmpty { args += extra }
+        if let projectCfg = resolved.projectCfg, !projectCfg.extraArgs.isEmpty {
+            args += projectCfg.extraArgs
+        }
         if let sid = resumeSessionId {
             args += ["--session", ClaudeCodeHarness.neutralizeLeadingDash(sid)]
         } else if !task.isEmpty {
@@ -113,6 +116,7 @@ public struct OpenCodeHarness: Harness {
         // global config (auth/providers survive). VIGIL_* feed the plugin's reverse channel.
         var env = ProcessInfo.processInfo.environment
         if let e = entry { for (k, v) in e.env { env[k] = v } }
+        if let projectCfg = resolved.projectCfg { for (k, v) in projectCfg.env { env[k] = v } }
         if let data = try? JSONSerialization.data(withJSONObject: cfg, options: [.sortedKeys]),
            let json = String(data: data, encoding: .utf8) {
             env["OPENCODE_CONFIG_CONTENT"] = json

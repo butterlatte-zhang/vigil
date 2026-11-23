@@ -1,0 +1,10 @@
+node_modules/
+dist/
+*.log
+*.tsbuildinfo
+
+# local test artifacts
+test-results/
+playwright-report/
+*.png
+!.gitignore

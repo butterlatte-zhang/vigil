@@ -210,6 +210,17 @@ public struct ClaudeCodeHarness: Harness {
         }
         if let extra = entry?.extraArgs, !extra.isEmpty { args += extra }
 
+        // Project overlay (<cwd>/.vigil/config.json): extra working directories and flags.
+        // addDirs/additionalClaudeMd are claude-only; extraArgs/env also reach codex/opencode
+        // from their own harnesses.
+        if let projectCfg = resolved.projectCfg {
+            if !projectCfg.addDirs.isEmpty {
+                args.append("--add-dir")
+                args += projectCfg.addDirs.map { Self.resolveProjectPath($0, cwd: cwd) }
+            }
+            if !projectCfg.extraArgs.isEmpty { args += projectCfg.extraArgs }
+        }
+
         // Strip only the parent session's identity markers — a cell is a first-class
         // session, not a nested child. Everything else passes through (cell env = user
         // env + vigil overlay).
@@ -223,6 +234,13 @@ public struct ClaudeCodeHarness: Harness {
         // The entry's env (base URLs / keys / proxies) overlays the inherited env — same
         // add-don't-subtract direction as the vigil channels.
         if let e = entry { for (k, v) in e.env { env[k] = v } }
+        if let projectCfg = resolved.projectCfg {
+            for (k, v) in projectCfg.env { env[k] = v }
+            // claude only: CLAUDE.md discovery from the folders added above.
+            if projectCfg.additionalClaudeMd {
+                env["CLAUDE_CODE_ADDITIONAL_DIRECTORIES_CLAUDE_MD"] = "1"
+            }
+        }
         // Forced (not just a nil fallback) — rationale at vigilFallbackTERM.
         env["TERM"] = vigilFallbackTERM
 
@@ -419,5 +437,13 @@ public struct ClaudeCodeHarness: Harness {
     /// from the prompt).
     static func neutralizeLeadingDash(_ task: String) -> String {
         task.first == "-" ? " " + task : task
+    }
+
+    /// Project-overlay paths are written relative to the project cwd; absolute and
+    /// tilde-prefixed forms pass through unchanged (expanded to the real home).
+    static func resolveProjectPath(_ p: String, cwd: String) -> String {
+        if p.hasPrefix("~") { return VigilConfigDir.expandTilde(p) }
+        if (p as NSString).isAbsolutePath { return p }
+        return (cwd as NSString).appendingPathComponent(p)
     }
 }
