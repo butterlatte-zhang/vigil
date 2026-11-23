@@ -138,9 +138,18 @@ deliberate deviation from the macOS table.)
 | Ctrl+Shift+] / [ | Next / previous node |
 | Ctrl+Shift+U | Jump to the latest node needing attention |
 | Ctrl+Shift+B | Show / hide sidebar |
-| Ctrl+Shift+J | Show / hide the bottom terminal |
+| Ctrl+\` / Ctrl+Shift+\` | Show / hide the bottom terminal (Ctrl+Shift+J is an alias) |
 | Ctrl+Shift+R | Rename session |
 | Ctrl+Shift+W | Close session |
+
+Inside a terminal (agent cell or the bottom shell):
+
+| Shortcut | Action |
+|---|---|
+| Shift+Enter | Insert a newline (same as Alt+Enter, and the launcher's Shift+Enter) |
+| Ctrl+Shift+C · Ctrl+C with a selection | Copy the selection (Ctrl+C without a selection still interrupts the agent) |
+| Ctrl+Shift+V | Paste |
+| Ctrl+V | Paste in the bottom shell; agent TUIs keep Ctrl+V for their own clipboard |
 
 ## Windows-specific notes
 

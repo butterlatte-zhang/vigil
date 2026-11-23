@@ -645,6 +645,7 @@ button {
   min-height: 0;
   padding: 8px 14px 6px;
   background: var(--term);
+  overflow: hidden;
 }
 .terminal-host .xterm {
   height: 100%;
@@ -1116,9 +1117,15 @@ button {
   font-weight: 500;
   color: var(--text2);
 }
+/* The xterm host must be given a definite height by its parent. Without `display:
+   flex` the host sized itself from xterm's own default 24-row canvas, so the terminal
+   was always taller than the panel (prompt and output hidden below the fold) and
+   FitAddon measured that overflow instead of the panel. */
 .bottom-body {
   flex: 1;
   min-height: 0;
+  display: flex;
+  overflow: hidden;
 }
 
 /* MARK: modal + toast */

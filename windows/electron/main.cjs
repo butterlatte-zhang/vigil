@@ -5,7 +5,7 @@
 // outside the Electron process means node-pty never has to be rebuilt against Electron's
 // ABI and the same build can also be opened in a normal browser for debugging.
 
-const { app, BrowserWindow, dialog, ipcMain, shell } = require('electron')
+const { app, BrowserWindow, dialog, ipcMain, shell, clipboard } = require('electron')
 const { spawn } = require('node:child_process')
 const path = require('node:path')
 
@@ -95,6 +95,10 @@ async function createWindow() {
       title: 'Add project',
     })
     return result.canceled ? null : result.filePaths[0] ?? null
+  })
+  ipcMain.handle('vigil:readClipboard', () => clipboard.readText())
+  ipcMain.handle('vigil:writeClipboard', (_event, text) => {
+    clipboard.writeText(typeof text === 'string' ? text : '')
   })
   ipcMain.on('vigil:setTheme', (_event, theme) => {
     if (!win || process.platform !== 'win32') return

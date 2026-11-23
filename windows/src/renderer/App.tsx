@@ -390,6 +390,14 @@ export default function App() {
         if (next) setSelectedBySession((m) => ({ ...m, [activeSession.id]: next.id }))
       }
 
+      // Ctrl+` / Ctrl+Shift+` — show / hide the bottom terminal, the Windows Terminal
+      // and VS Code convention (Ctrl+Shift+J is kept as an alias).
+      if (e.code === 'Backquote' && !e.altKey) {
+        e.preventDefault()
+        if (activeSession) send({ type: 'shellToggle', sessionId: activeSession.id })
+        return
+      }
+
       // Ctrl+, — open the Settings workspace (macOS ⌘,).
       if (!e.shiftKey && !e.altKey && e.code === 'Comma') {
         e.preventDefault()

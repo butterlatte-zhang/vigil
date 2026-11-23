@@ -41,7 +41,7 @@ export function TopBar({
       {showShell && (
         <button
           className={`toggle-btn no-drag ${shellOpen ? 'open' : ''}`}
-          title="Toggle bottom terminal"
+          title="Toggle bottom terminal (Ctrl+`)"
           onClick={onToggleShell}
         >
           <TerminalGlyph />
