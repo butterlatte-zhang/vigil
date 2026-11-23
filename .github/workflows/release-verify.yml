@@ -19,6 +19,10 @@ on:
 jobs:
   launch-smoke:
     name: launch smoke (${{ matrix.os }})
+    # Windows-only releases use a `win-*` tag and carry no macOS DMG. Release events
+    # always load this workflow from the default branch, so this guard must land on main
+    # as well as the windows branch.
+    if: github.event_name == 'workflow_dispatch' || startsWith(github.event.release.tag_name || '', 'v')
     strategy:
       fail-fast: false
       matrix:
