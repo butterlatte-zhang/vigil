@@ -179,6 +179,11 @@ Inside a terminal (agent cell or the bottom shell):
   the wording to "Quick safety check … Is this a project you created or one you trust?"
   and made **No, exit** the first option, so the watcher selects the second option
   ("Yes, I trust this folder"); older wording still gets "1".
+- **node-pty 1.1.0 patch.** `scripts/patch-node-pty.mjs` (run from `postinstall`, and
+  again against a packaged copy if needed) makes the ConPTY console-list agent report
+  `[shellPid]` instead of crashing when `AttachConsole` misses an already-killed shell.
+  Without it every pty kill logs an uncaught `AttachConsole failed` and waits out
+  node-pty's 5 s fallback timer.
 
 ## Security
 

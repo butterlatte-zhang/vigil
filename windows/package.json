@@ -14,6 +14,7 @@
     "dev": "npm run build:core && vite build && electron . --dev",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "test": "vitest run",
+    "postinstall": "node scripts/patch-node-pty.mjs",
     "package:win": "npm run build && node scripts/package-win.mjs"
   },
   "dependencies": {
