@@ -52,7 +52,7 @@ enum HarnessResolve {
         let roleCfg = roles?.setting(role: role, isRoot: isRoot)
         // Project overlay may pin the ROOT cell's agent; children keep role-based
         // resolution (their per-project switch is `.vigil/roles.json`'s role.agent).
-        let projectCfg = userConfigDir.map { ProjectLaunchConfig.load(projectCwd: cwd) }
+        let projectCfg = userConfigDir.map { _ in ProjectLaunchConfig.load(projectCwd: cwd) }
         let effectiveSessionKey = (isRoot ? projectCfg?.agent : nil) ?? sessionKey
         let entry = resolveEntry(registry: registry, sessionKey: effectiveSessionKey,
                                  roleKey: isRoot ? nil : roleCfg?.agent, kind: kind)
